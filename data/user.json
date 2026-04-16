@@ -1,0 +1,23 @@
+[
+    {
+        "username": "hoangton",
+        "password": "123",
+        "role": "Admin",
+        "department": "Management",
+        "team": "General"
+    },
+    {
+        "username": "tech1",
+        "password": "123",
+        "role": "TS Leader",
+        "department": "Technical Support",
+        "team": "General"
+    },
+    {
+        "username": "sale1",
+        "password": "123",
+        "role": "Sale Staff",
+        "department": "Sale Team",
+        "team": "Team 1"
+    }
+]

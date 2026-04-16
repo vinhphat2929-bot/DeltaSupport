@@ -1,0 +1,14 @@
+[
+  {
+    "keyword": "pax a35",
+    "content": "Check COM trong Device Manager. Rút cắm lại cáp. Kiểm tra Stable for Semi-Integrated."
+  },
+  {
+    "keyword": "printer",
+    "content": "Restart Print Spooler. Kiểm tra dây USB/LAN. In test page."
+  },
+  {
+    "keyword": "terminal",
+    "content": "Kiểm tra kết nối terminal, nguồn điện, và cấu hình integration."
+  }
+]

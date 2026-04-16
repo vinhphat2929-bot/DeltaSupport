@@ -1,0 +1,199 @@
+=== DELTA ASSISTANT DEVELOPMENT LOG ===
+
+1. VẤN ĐỀ BAN ĐẦU
+- Khi login admin → tự động bật cửa sổ Admin Approval
+→ Yêu cầu: chỉ mở khi bấm nút "Admin Manager"
+
+✔ Đã fix:
+- Xóa auto gọi AdminApprovalPage sau login
+- Chuyển sang gọi bằng button trong Settings
+
+---
+
+2. VẤN ĐỀ UI
+- Thanh function bị lệch
+- Không scale khi resize window
+- Không căn giữa
+
+✔ Đã fix:
+- Dùng grid + weight để auto scale
+- Căn giữa theo trục
+- Tách layout rõ header / content
+
+---
+
+3. LỖI API
+- Login bị:
+  Read timeout (ngrok)
+
+✔ Nguyên nhân:
+- API server không chạy
+- ngrok đổi link
+
+✔ Fix:
+- restart uvicorn
+- restart ngrok
+- update API_BASE_URL
+
+---
+
+4. LỖI UVICORN
+Error:
+Could not import module "api_server"
+
+✔ Fix:
+- cd đúng thư mục
+- kiểm tra file api_server.py
+- test import:
+  python -c "import api_server"
+
+---
+
+5. ADMIN MANAGER UI
+✔ Đã build:
+- Search user
+- Filter status / role
+- Approve
+- Block / Unblock
+- Edit user
+- View Log
+
+✔ Fix window:
+- luôn nổi lên trên:
+  transient()
+  lift()
+  topmost True → False
+
+---
+
+6. EDIT USER WINDOW
+❌ Lỗi:
+- Không cuộn được
+- Sau khi sửa → mất nội dung
+
+✔ Fix:
+- Dùng CTkScrollableFrame
+- Thêm layer:
+  scroll_frame → content frame
+
+---
+
+7. DATABASE
+Table Users:
+- Username
+- Password
+- FullName
+- Role
+- IsActive
+- IsApproved
+- Email
+- Department
+- ApprovedBy
+- ApprovedAt
+
+✔ Thêm:
+UserAuditLog
+
+---
+
+8. AUDIT LOG SYSTEM
+✔ Tạo bảng:
+
+UserAuditLog:
+- LogID
+- Username
+- ActionType
+- FieldName
+- OldValue
+- NewValue
+- ActionBy
+- ActionAt
+- Note
+
+---
+
+9. API SERVER UPDATE
+✔ Thêm:
+- write_user_log()
+
+✔ Log cho:
+- REGISTER
+- APPROVE
+- BLOCK
+- UNBLOCK
+- UPDATE_USER
+- CHANGE_PASSWORD
+
+✔ API mới:
+- GET /admin/users
+- PUT /admin/users/{username}
+- PUT /admin/users/{username}/approve
+- PUT /admin/users/{username}/block
+- PUT /admin/users/{username}/unblock
+- GET /user-logs/{username}
+- GET /audit-logs
+
+---
+
+10. ADMIN MANAGER FEATURES
+✔ Đã có:
+- Manage user full quyền
+- Edit info
+- Set role
+- Set department
+- Block / unblock
+- Approve
+- View logs
+
+---
+
+11. VIEW LOG UI
+✔ Thêm:
+- Button "View Log"
+- Popup hiển thị:
+  - Action
+  - Field
+  - Old value
+  - New value
+  - Action by
+  - Time
+  - Note
+
+---
+
+12. HƯỚNG PHÁT TRIỂN TIẾP
+- Tab riêng:
+  → Users
+  → Audit Logs
+
+- Filter log:
+  → theo admin
+  → theo action
+
+- Color log:
+  → xanh: approve
+  → đỏ: block
+  → tím: update
+
+- Thêm:
+  → Reset password
+  → Delete user
+  → Permission nâng cao
+
+---
+
+=== KẾT LUẬN ===
+
+✔ App đã đạt:
+- Login API OK
+- Admin Manager hoàn chỉnh
+- Audit log đầy đủ
+- UI có thể scale + scroll
+- Quản lý user real-time
+
+✔ Sẵn sàng:
+- dùng nội bộ
+- scale nhiều admin
+- tracking đầy đủ lịch sử
+
+=== END ===

@@ -1,0 +1,85 @@
+[
+    {
+        "title": "Link Sheet",
+        "items": [
+            {
+                "name": "Báo cáo / bàn giao công việc",
+                "value": "https://docs.google.com/spreadsheets/d/1nMJaMNkfJg_R4Lo5EvS16hR-XIwMytnfSDhJAvCLd9A/edit?gid=0#gid=0"
+            },
+            {
+                "name": "Check-list",
+                "value": "https://docs.google.com/spreadsheets/d/1-LgDsJHa4Xl5C4nfeWm5WmSp8shKdgce1LR12JT9ipM/edit?gid=963482658#gid=963482658"
+            }
+        ]
+    },
+    {
+        "title": "Link bộ cài",
+        "items": [
+            {
+                "name": "ATLED POS",
+                "value": "https://drive.google.com/file/d/1NId5zLjedXBxILHPBX0kxELeu9P0NSoU/view?usp=drive_link"
+            },
+            {
+                "name": "SQL 2014",
+                "value": "https://download.microsoft.com/download/3/9/F/39F968FA-DEBB-4960-8F9E-0E7BB3035959/SQLEXPRWT_x64_ENU.exe"
+            },
+            {
+                "name": "SQL 2022",
+                "value": "https://go.microsoft.com/fwlink/?linkid=2215158"
+            },
+            {
+                "name": "App Check-in",
+                "value": "https://atledpos.com/checkin.apk"
+            },
+            {
+                "name": "App Report",
+                "value": "https://atledpos.com/report.apk"
+            }
+        ]
+    },
+    {
+        "title": "Link tải RustDesk",
+        "items": [
+            {
+                "name": "Tải lên máy tiệm",
+                "value": "https://atledpos.com/aiomerchant.msi"
+            },
+            {
+                "name": "Tải lên máy Tech",
+                "value": "https://atledpos.com/aiosupport.msi"
+            }
+        ]
+    },
+    {
+        "title": "Link OneDrive hướng dẫn",
+        "value": "https://bit.ly/cachxulyTECH"
+    },
+    {
+        "title": "Link AUTO on HOTSPOT",
+        "value": "https://atledpos.com/Hotspotetup.msi"
+    },
+    {
+        "title": "Link update POS",
+        "value": "https://bit.ly/UpdatePOS"
+    },
+    {
+        "title": "Link mua SMS",
+        "value": "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+    },
+    {
+        "title": "Account Backup",
+        "value": "atledbk@aiomerchant.com / B@ckUpAT2025"
+    },
+    {
+        "title": "Link check tracking number",
+        "value": "https://www.ups.com/track?loc=en_US&requester=ST/"
+    },
+    {
+        "title": "Driver",
+        "value": "https://oemdrivers.com/printer-caysn-cla58"
+    },
+    {
+        "title": "Rút gọn link Google Review",
+        "value": "https://whitespark.ca/google-review-link-generator/"
+    }
+]
