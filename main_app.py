@@ -39,7 +39,7 @@ TOPBAR_BORDER = "#8b6b4a"
 # ===== CONTENT =====
 CONTENT_BG = "#f3ede4"
 CONTENT_INNER = "#fffaf3"
-CONTENT_BORDER = "#6e5846"
+CONTENT_BORDER = "#6e51026"
 
 # ===== BUTTON =====
 BTN_ACTIVE = "#c58b42"
@@ -336,11 +336,11 @@ class MainAppPage(ctk.CTkFrame):
     # BUILD UI
     # =========================================================
     def build_ui(self):
-        self.logo_image = self.safe_load_icon("logo.png", (74, 74))
+        self.logo_image = self.safe_load_icon("logo.png", (9, 102))
         if self.logo_image is None:
-            self.logo_image = self.safe_load_icon("app.ico", (74, 74))
+            self.logo_image = self.safe_load_icon("app.ico", (102, 102))
         if self.logo_image is None:
-            self.logo_image = self.safe_load_icon("home.png", (74, 74))
+            self.logo_image = self.safe_load_icon("home.png", (102, 102))
 
         self.settings_icon = self.safe_load_icon("setting.png", (22, 22))
         self.logout_icon = self.safe_load_icon("log-out.png", (24, 24))
@@ -1350,43 +1350,15 @@ class MainAppPage(ctk.CTkFrame):
         except Exception:
             pass
 
-    def handle_click_outside(self, event):
+    def handle_click_outside(self, event=None):
         try:
-            widget = event.widget
-
-            parent = widget
-            while parent is not None:
-                if parent == self.menu_toggle_btn:
-                    return
-                parent = parent.master
-
-            parent = widget
-            while parent is not None:
-                if parent == self.overlay_menu_frame:
-                    return
-                parent = parent.master
-
-            parent = widget
-            while parent is not None:
-                if parent == self.work_schedule_button:
-                    return
-                parent = parent.master
-
-            parent = widget
-            while parent is not None:
-                if parent == self.work_schedule_dropdown:
-                    return
-                parent = parent.master
-
-            self.hide_top_menus()
-
+            if hasattr(self, "work_schedule_dropdown") and self.work_schedule_dropdown:
+                if self.work_schedule_dropdown.winfo_exists():
+                    self.work_schedule_dropdown.place_forget()
+                else:
+                    self.work_schedule_dropdown = None
         except Exception:
-            pass
-
-        # đảm bảo luôn đóng dropdown
-        self.work_schedule_dropdown_open = False
-        if self.work_schedule_dropdown is not None:
-            self.work_schedule_dropdown.place_forget()
+            self.work_schedule_dropdown = None
 
     def open_change_password_with_pin(self):
         username = self.user.get("username", "").strip()
