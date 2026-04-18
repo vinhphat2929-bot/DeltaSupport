@@ -1,0 +1,61 @@
+{
+  "shops": {
+    "demo": {
+      "display_name": "demo",
+      "used_guids": [
+        "1efc6c47-5ca1-466d-b880-cb3685e9cf22"
+      ],
+      "removed_guids": [
+        "52b94edd-6aed-4d88-ace2-4460ea57b2e0",
+        "59f0830a-5c51-4504-9474-c00c6f343d94",
+        "7abbee95-2c85-4bc9-b568-1e34b0a9850d",
+        "904794ec-45b7-49f2-8367-bbf72092f3f0",
+        "963e059e-b9b8-4509-9f8a-e4c33bb47d58",
+        "b6fb1837-2607-491c-b8b0-70b45b96382e",
+        "b76a364b-00dc-4778-b48e-306b6ac73250",
+        "ba5a28c3-72e4-4557-b94b-a899939352c0",
+        "c60f1104-03f4-4cb1-907f-ce3820d91524",
+        "d044873e-e302-4d97-99b0-1a8c4af82b37",
+        "d095fc6f-0ce4-4a43-aa7f-143333e0d0a3",
+        "e7c88d38-4855-4016-94d7-90016248cbbb",
+        "ea61790a-757a-4a12-aec1-a9be3502f3ba",
+        "fa8758e9-75fe-438a-b4d0-7afcde4ba251"
+      ]
+    },
+    "2222": {
+      "display_name": "2222",
+      "used_guids": [],
+      "removed_guids": []
+    },
+    "ivy nail spa": {
+      "display_name": "IVY NAIL SPA",
+      "used_guids": [
+        "38699566-3cfc-476f-a600-96b1fd165522"
+      ],
+      "removed_guids": [
+        "5a3b92ae-ab1a-4b99-a78f-78319564a240",
+        "eb713ee5-5439-43fe-bb0b-a7e79d5a1468"
+      ]
+    },
+    "22222": {
+      "display_name": "22222",
+      "used_guids": [
+        "f0689d75-e17f-4030-b920-9dc4a3524497"
+      ],
+      "removed_guids": []
+    },
+    "2": {
+      "display_name": "2",
+      "used_guids": [
+        "0b4d752c-963b-49c7-8052-847d8cab6e61"
+      ],
+      "removed_guids": []
+    }
+  },
+  "global_used_guids": [
+    "0b4d752c-963b-49c7-8052-847d8cab6e61",
+    "1efc6c47-5ca1-466d-b880-cb3685e9cf22",
+    "38699566-3cfc-476f-a600-96b1fd165522",
+    "f0689d75-e17f-4030-b920-9dc4a3524497"
+  ]
+}

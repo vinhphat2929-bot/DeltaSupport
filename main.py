@@ -11,12 +11,30 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 GWL_STYLE = -16
+GA_ROOT = 2
 WS_MAXIMIZEBOX = 0x00010000
 WS_THICKFRAME = 0x00040000
 SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
 SWP_NOZORDER = 0x0004
 SWP_FRAMECHANGED = 0x0020
+user32 = ctypes.windll.user32
+user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+user32.GetWindowLongW.restype = ctypes.c_long
+user32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+user32.SetWindowLongW.restype = ctypes.c_long
+user32.SetWindowPos.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_uint,
+]
+user32.SetWindowPos.restype = ctypes.c_int
+user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+user32.GetAncestor.restype = ctypes.c_void_p
 
 
 class App(ctk.CTk):
@@ -25,15 +43,15 @@ class App(ctk.CTk):
 
         self.current_user = None
         self.display_mode = "windowed"
-        self._native_style_applied = False
+        self._native_style_job = None
 
         self.title("Delta Assistant")
         self.resizable(True, True)
-        self.bind("<Configure>", self._on_window_configure)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
 
         self.set_app_icon()
         self.apply_display_mode("windowed", force=True)
-        self.after(150, self.apply_native_window_mode)
+        self.after(150, self.schedule_native_window_style_refresh)
 
         self.withdraw()
         self.after(100, self.show_splash)
@@ -61,16 +79,25 @@ class App(ctk.CTk):
         for widget in self.winfo_children():
             widget.destroy()
 
-    def apply_native_window_mode(self):
-        if self._native_style_applied:
-            return
+    def _get_native_window_handle(self):
+        hwnd = self.winfo_id()
+        try:
+            root_hwnd = user32.GetAncestor(hwnd, GA_ROOT)
+            if root_hwnd:
+                return root_hwnd
+        except Exception:
+            pass
+        return hwnd
+
+    def apply_native_window_style(self):
+        self._native_style_job = None
 
         try:
-            hwnd = self.winfo_id()
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
+            hwnd = self._get_native_window_handle()
+            style = user32.GetWindowLongW(hwnd, GWL_STYLE)
             style = (style | WS_MAXIMIZEBOX) & ~WS_THICKFRAME
-            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, style)
-            ctypes.windll.user32.SetWindowPos(
+            user32.SetWindowLongW(hwnd, GWL_STYLE, style)
+            user32.SetWindowPos(
                 hwnd,
                 0,
                 0,
@@ -79,9 +106,17 @@ class App(ctk.CTk):
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
             )
-            self._native_style_applied = True
         except Exception:
             pass
+
+    def schedule_native_window_style_refresh(self, delay=20):
+        if self._native_style_job is not None:
+            try:
+                self.after_cancel(self._native_style_job)
+            except Exception:
+                pass
+
+        self._native_style_job = self.after(delay, self.apply_native_window_style)
 
     def get_windowed_geometry(self):
         screen_w = self.winfo_screenwidth()
@@ -104,25 +139,17 @@ class App(ctk.CTk):
             self.state("zoomed")
         else:
             self.state("normal")
-            width, height, x, y = self.get_windowed_geometry()
-            self.geometry(f"{width}x{height}+{x}+{y}")
+            self.apply_windowed_geometry()
 
-        self.after(30, self.apply_native_window_mode)
+        self.schedule_native_window_style_refresh(delay=40)
 
     def toggle_display_mode(self):
         next_mode = "windowed" if self.display_mode == "maximized" else "maximized"
         self.apply_display_mode(next_mode)
 
-    def _on_window_configure(self, event=None):
-        try:
-            current_state = str(self.state()).lower()
-        except Exception:
-            current_state = "normal"
-
-        if current_state == "zoomed":
-            self.display_mode = "maximized"
-        else:
-            self.display_mode = "windowed"
+    def apply_windowed_geometry(self):
+        width, height, x, y = self.get_windowed_geometry()
+        self.geometry(f"{width}x{height}+{x}+{y}")
 
     def show_splash(self):
         self.splash = SplashScreen(self)
@@ -133,7 +160,7 @@ class App(ctk.CTk):
             self.splash.destroy()
 
         self.deiconify()
-        self.after(50, self.apply_native_window_mode)
+        self.schedule_native_window_style_refresh(delay=60)
         self.show_login()
 
     def show_login(self):

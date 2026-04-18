@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from routers import auth, admin, pin, work_schedule
+from routers import auth, admin, pin, work_schedule, tool_logs, task_follow
 
 app = FastAPI()
 
@@ -14,3 +14,5 @@ app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(pin.router)
 app.include_router(work_schedule.router)
+app.include_router(tool_logs.router)
+app.include_router(task_follow.router)

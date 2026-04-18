@@ -78,6 +78,7 @@ class MainAppPage(ctk.CTkFrame):
 
         self.logo_image = None
         self.logo_image_compact = None
+        self.lock_icon = None
         self.settings_icon = None
         self.logout_icon = None
         self.menu_open = False
@@ -102,12 +103,20 @@ class MainAppPage(ctk.CTkFrame):
         self.settings_container = None
         self.settings_circle = None
         self.settings_label = None
+        self.lock_container = None
+        self.lock_circle = None
+        self.lock_label = None
         self.logout_container = None
         self.logout_circle = None
         self.logout_label = None
 
         self.clock_time_label = None
         self.clock_date_label = None
+        self.lock_screen_overlay = None
+        self.lock_screen_time_label = None
+        self.lock_screen_date_label = None
+        self.lock_screen_hint_label = None
+        self.is_screen_locked = False
 
         self.nav_buttons = {}
         self.nav_button_order = []
@@ -117,6 +126,9 @@ class MainAppPage(ctk.CTkFrame):
         self.work_schedule_button = None
         self.work_schedule_dropdown = None
         self.work_schedule_dropdown_open = False
+        self.task_button = None
+        self.task_dropdown = None
+        self.task_dropdown_open = False
 
         self.extra_menu_buttons = {}
         self.admin_manager_window = None
@@ -259,13 +271,13 @@ class MainAppPage(ctk.CTkFrame):
             "sale",
         ]
 
-        if page_name in {"POS", "Link / Data", "Cách xử lý", "SQL"} and not is_ts_department:
+        if page_name in {"POS", "Link / Data", "Task", "SQL"} and not is_ts_department:
             return False
 
         permission_map = {
             "POS": all_staff_roles,
             "Link / Data": all_staff_roles,
-            "Cách xử lý": all_staff_roles,
+            "Task": all_staff_roles,
             "SQL": ["ts leader", "ts senior", "management", "admin"],
             "Work Schedule": all_staff_roles,
             "Monthly Leave Summary": [
@@ -325,6 +337,12 @@ class MainAppPage(ctk.CTkFrame):
             else:
                 self.work_schedule_button.configure(state="disabled")
 
+        if self.task_button is not None:
+            if self.functions_started:
+                self.task_button.configure(state="normal")
+            else:
+                self.task_button.configure(state="disabled")
+
         self.after(50, self.reflow_header_layout)
 
     def start_function_experience(self):
@@ -372,7 +390,26 @@ class MainAppPage(ctk.CTkFrame):
                     border_color=BTN_IDLE,
                 )
 
+        if self.task_button is not None:
+            if active_name in ["Task", "Report", "Follow", "Setup / Training"]:
+                self.task_button.configure(
+                    fg_color=BTN_ACTIVE,
+                    hover_color=BTN_ACTIVE_HOVER,
+                    text_color=TEXT_DARK,
+                    border_color=BTN_ACTIVE,
+                )
+            else:
+                self.task_button.configure(
+                    fg_color=BTN_IDLE,
+                    hover_color=BTN_IDLE_HOVER,
+                    text_color=TEXT_MAIN,
+                    border_color=BTN_IDLE,
+                )
+
     def create_section_title(self, parent, title, subtitle=""):
+        if str(getattr(self, "current_page", "")).strip() == "Task":
+            return
+
         title_label = ctk.CTkLabel(
             parent,
             text=title,
@@ -397,6 +434,10 @@ class MainAppPage(ctk.CTkFrame):
             self.clock_time_label.configure(text=now.strftime("%I:%M %p"))
         if self.clock_date_label:
             self.clock_date_label.configure(text=now.strftime("%a %d/%m/%Y"))
+        if self.lock_screen_time_label:
+            self.lock_screen_time_label.configure(text=now.strftime("%I:%M %p"))
+        if self.lock_screen_date_label:
+            self.lock_screen_date_label.configure(text=now.strftime("%a %d/%m/%Y"))
 
         self.after(1000, self.update_clock)
 
@@ -472,6 +513,7 @@ class MainAppPage(ctk.CTkFrame):
             self.logo_image_compact = self.safe_load_image_fit("home.png", 84, 52)
 
         self.settings_icon = self.safe_load_icon("setting.png", (22, 22))
+        self.lock_icon = self.safe_load_icon("lock.png", (22, 22))
         self.logout_icon = self.safe_load_icon("log-out.png", (24, 24))
 
         self.grid_rowconfigure(0, weight=0)
@@ -557,7 +599,7 @@ class MainAppPage(ctk.CTkFrame):
                 ("POS", self.show_pos_page, 82),
                 ("SQL", self.show_sql_page, 82),
                 ("Link / Data", self.show_link_data_page, 96),
-                ("Cách xử lý", self.show_process_page, 100),
+                ("Task", self.show_process_page, 100),
             ]
             nav_items = [
                 (name, command, btn_width)
@@ -571,6 +613,8 @@ class MainAppPage(ctk.CTkFrame):
         self.nav_widgets = []
 
         for name, command, btn_width in nav_items:
+            if name == "Task":
+                continue
             btn = ctk.CTkButton(
                 self.nav_frame,
                 text=name,
@@ -589,6 +633,22 @@ class MainAppPage(ctk.CTkFrame):
             self.nav_button_order.append(name)
             self.nav_button_widths[name] = btn_width
             self.nav_widgets.append((name, btn, btn_width))
+
+        self.task_button = ctk.CTkButton(
+            self.nav_frame,
+            text="Task",
+            width=100,
+            height=36,
+            corner_radius=12,
+            fg_color=BTN_IDLE,
+            hover_color=BTN_IDLE_HOVER,
+            text_color=TEXT_MAIN,
+            border_width=1,
+            border_color=BTN_IDLE,
+            font=("Segoe UI", 12, "bold"),
+            command=self.toggle_task_dropdown,
+        )
+        self.nav_widgets.append(("Task", self.task_button, 100))
 
         self.work_schedule_button = ctk.CTkButton(
             self.nav_frame,
@@ -651,6 +711,51 @@ class MainAppPage(ctk.CTkFrame):
             btn.pack(fill="x", padx=10, pady=(10 if i == 0 else 6, 0))
 
         self.work_schedule_dropdown.place_forget()
+
+        self.task_dropdown = ctk.CTkFrame(
+            self,
+            fg_color="#201915",
+            corner_radius=16,
+            border_width=2,
+            border_color="#a47b4d",
+            width=220,
+            height=190,
+        )
+
+        task_dropdown_inner = ctk.CTkFrame(
+            self.task_dropdown,
+            fg_color="#2b231e",
+            corner_radius=14,
+            border_width=1,
+            border_color="#5f4934",
+        )
+        task_dropdown_inner.pack(fill="both", expand=True, padx=8, pady=8)
+
+        task_items = [
+            ("Report", lambda: self.show_process_page("report")),
+            ("Follow", lambda: self.show_process_page("follow")),
+            ("Setup / Training", lambda: self.show_process_page("setup_training")),
+        ]
+
+        for i, (name, command) in enumerate(task_items):
+            btn = ctk.CTkButton(
+                task_dropdown_inner,
+                text=name,
+                width=180,
+                height=38,
+                corner_radius=12,
+                fg_color=BTN_IDLE,
+                hover_color=BTN_IDLE_HOVER,
+                text_color=TEXT_MAIN,
+                border_width=1,
+                border_color=BTN_IDLE,
+                font=("Segoe UI", 12, "bold"),
+                anchor="w",
+                command=lambda cmd=command: self.handle_task_menu_action(cmd),
+            )
+            btn.pack(fill="x", padx=10, pady=(10 if i == 0 else 6, 0))
+
+        self.task_dropdown.place_forget()
 
         # ===== CLOCK =====
         self.clock_outer = ctk.CTkFrame(
@@ -785,6 +890,64 @@ class MainAppPage(ctk.CTkFrame):
             settings_icon_label,
             self.settings_label,
             _open_settings,
+            BTN_IDLE,
+            BTN_IDLE_HOVER,
+        )
+
+        # ===== LOCK =====
+        self.lock_container = ctk.CTkFrame(
+            self.right_cluster,
+            fg_color="transparent",
+            width=76,
+            height=70,
+        )
+        self.lock_container.pack(side="left", padx=(0, 6), pady=(2, 2))
+        self.lock_container.grid_propagate(False)
+
+        self.lock_circle = ctk.CTkFrame(
+            self.lock_container,
+            width=44,
+            height=44,
+            corner_radius=22,
+            fg_color=BTN_IDLE,
+            border_width=1,
+            border_color=TOPBAR_BORDER,
+        )
+        self.lock_circle.pack(pady=(0, 3))
+        self.lock_circle.pack_propagate(False)
+
+        if self.lock_icon is not None:
+            lock_icon_label = ctk.CTkLabel(
+                self.lock_circle,
+                text="",
+                image=self.lock_icon,
+            )
+        else:
+            lock_icon_label = ctk.CTkLabel(
+                self.lock_circle,
+                text="L",
+                font=("Segoe UI", 16, "bold"),
+                text_color=TEXT_MAIN,
+            )
+        lock_icon_label.place(relx=0.5, rely=0.5, anchor="center")
+
+        self.lock_label = ctk.CTkLabel(
+            self.lock_container,
+            text="LOCK",
+            font=("Segoe UI", 9),
+            text_color=TEXT_SUB,
+        )
+        self.lock_label.pack()
+
+        def _lock_screen(event=None):
+            self.lock_screen()
+
+        self._bind_topbar_action(
+            self.lock_container,
+            self.lock_circle,
+            lock_icon_label,
+            self.lock_label,
+            _lock_screen,
             BTN_IDLE,
             BTN_IDLE_HOVER,
         )
@@ -1008,6 +1171,9 @@ class MainAppPage(ctk.CTkFrame):
             if self.work_schedule_dropdown is not None:
                 self.work_schedule_dropdown.place_forget()
             self.work_schedule_dropdown_open = False
+            if self.task_dropdown is not None:
+                self.task_dropdown.place_forget()
+            self.task_dropdown_open = False
 
             self.menu_open = True
             self.overlay_menu_frame.place(x=24, y=95)
@@ -1038,6 +1204,9 @@ class MainAppPage(ctk.CTkFrame):
             if self.overlay_menu_frame is not None:
                 self.overlay_menu_frame.place_forget()
             self.menu_open = False
+            if self.task_dropdown is not None:
+                self.task_dropdown.place_forget()
+            self.task_dropdown_open = False
 
             btn_x = self.work_schedule_button.winfo_x()
             btn_y = self.work_schedule_button.winfo_y()
@@ -1048,6 +1217,36 @@ class MainAppPage(ctk.CTkFrame):
             )
             self.work_schedule_dropdown.lift()
             self.work_schedule_dropdown_open = True
+        except Exception:
+            pass
+
+    def toggle_task_dropdown(self):
+        if self.task_dropdown is None or self.task_button is None:
+            return
+
+        if self.task_dropdown_open:
+            self.task_dropdown_open = False
+            self.task_dropdown.place_forget()
+            return
+
+        try:
+            if self.overlay_menu_frame is not None:
+                self.overlay_menu_frame.place_forget()
+            self.menu_open = False
+
+            if self.work_schedule_dropdown is not None:
+                self.work_schedule_dropdown.place_forget()
+            self.work_schedule_dropdown_open = False
+
+            btn_x = self.task_button.winfo_x()
+            btn_y = self.task_button.winfo_y()
+            btn_h = self.task_button.winfo_height()
+
+            self.task_dropdown.place(
+                in_=self.nav_frame, x=btn_x - 2, y=btn_y + btn_h + 8
+            )
+            self.task_dropdown.lift()
+            self.task_dropdown_open = True
         except Exception:
             pass
 
@@ -1067,10 +1266,192 @@ class MainAppPage(ctk.CTkFrame):
                 text_color=TEXT_MAIN,
             )
 
+    def build_lock_screen_overlay(self):
+        if self.lock_screen_overlay is not None and self.lock_screen_overlay.winfo_exists():
+            return
+
+        self.lock_screen_overlay = ctk.CTkFrame(
+            self,
+            fg_color="#130f0c",
+            corner_radius=0,
+        )
+
+        center_card = ctk.CTkFrame(
+            self.lock_screen_overlay,
+            fg_color=BG_PANEL,
+            corner_radius=24,
+            border_width=1,
+            border_color=TOPBAR_BORDER,
+            width=420,
+            height=420,
+        )
+        center_card.place(relx=0.5, rely=0.47, anchor="center")
+        center_card.pack_propagate(False)
+
+        inner_card = ctk.CTkFrame(
+            center_card,
+            fg_color=BG_PANEL_2,
+            corner_radius=20,
+            border_width=1,
+            border_color="#5f4934",
+        )
+        inner_card.pack(fill="both", expand=True, padx=10, pady=10)
+
+        if self.lock_icon is not None:
+            lock_icon_label = ctk.CTkLabel(
+                inner_card,
+                text="",
+                image=self.lock_icon,
+            )
+        else:
+            lock_icon_label = ctk.CTkLabel(
+                inner_card,
+                text="LOCKED",
+                font=("Segoe UI", 20, "bold"),
+                text_color=BTN_ACTIVE,
+            )
+        lock_icon_label.pack(pady=(30, 10))
+
+        ctk.CTkLabel(
+            inner_card,
+            text="App Locked",
+            font=("Segoe UI", 28, "bold"),
+            text_color=TEXT_MAIN,
+        ).pack()
+
+        ctk.CTkLabel(
+            inner_card,
+            text="Click unlock and enter your 4-digit PIN.",
+            font=("Segoe UI", 13),
+            text_color=TEXT_SUB,
+        ).pack(pady=(8, 18))
+
+        self.lock_screen_time_label = ctk.CTkLabel(
+            inner_card,
+            text="01:10 PM",
+            font=("Segoe UI", 32, "bold"),
+            text_color=BTN_ACTIVE,
+        )
+        self.lock_screen_time_label.pack()
+
+        self.lock_screen_date_label = ctk.CTkLabel(
+            inner_card,
+            text="Tue 01/01/2026",
+            font=("Segoe UI", 12, "bold"),
+            text_color=TEXT_SUB,
+        )
+        self.lock_screen_date_label.pack(pady=(4, 22))
+
+        ctk.CTkLabel(
+            inner_card,
+            text=f"User: {self.user.get('username', 'Unknown')}",
+            font=("Segoe UI", 13, "bold"),
+            text_color=TEXT_SUB,
+        ).pack(pady=(0, 10))
+
+        ctk.CTkButton(
+            inner_card,
+            text="Unlock",
+            width=220,
+            height=46,
+            corner_radius=14,
+            fg_color=BTN_ACTIVE,
+            hover_color=BTN_ACTIVE_HOVER,
+            text_color=TEXT_DARK,
+            font=("Segoe UI", 15, "bold"),
+            command=self.open_unlock_dialog,
+        ).pack(pady=(8, 12))
+
+
+    def show_lock_screen_overlay(self):
+        self.build_lock_screen_overlay()
+        if self.lock_screen_overlay is None:
+            return
+
+        self.lock_screen_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.lock_screen_overlay.lift()
+
+    def hide_lock_screen_overlay(self):
+        if self.lock_screen_overlay is not None and self.lock_screen_overlay.winfo_exists():
+            self.lock_screen_overlay.place_forget()
+
+    def finish_lock_screen_setup(self):
+        self.hide_top_menus()
+        self.is_screen_locked = True
+        self.show_lock_screen_overlay()
+
+    def lock_screen(self):
+        if self.is_screen_locked:
+            self.show_lock_screen_overlay()
+            return
+
+        username = self.user.get("username", "").strip()
+        status_result = get_pin_status_api(username)
+
+        if not status_result.get("success"):
+            messagebox.showerror(
+                "PIN Error",
+                status_result.get("message", "Can not check PIN status."),
+            )
+            return
+
+        if not status_result.get("has_pin", False):
+            messagebox.showinfo(
+                "Create PIN",
+                "You need to create a 4-digit PIN before using lock screen.",
+            )
+            self.open_create_pin_flow(on_completed=self.finish_lock_screen_setup)
+            return
+
+        self.finish_lock_screen_setup()
+
+    def unlock_screen(self):
+        self.is_screen_locked = False
+        self.hide_lock_screen_overlay()
+
+    def open_unlock_dialog(self):
+        username = self.user.get("username", "").strip()
+
+        def after_enter_pin(pin_code):
+            result = verify_pin_api(username, pin_code, username)
+
+            if result.get("success"):
+                unlock_dialog.destroy()
+                self.unlock_screen()
+            else:
+                messagebox.showerror(
+                    "PIN Error",
+                    result.get("message", "PIN is incorrect."),
+                )
+
+        def open_forgot_pin_from_unlock():
+            unlock_dialog.destroy()
+            self.open_forgot_pin_flow(on_completed=self.unlock_screen)
+
+        unlock_dialog = PinVerifyDialog(
+            self,
+            title="Unlock with 4-digit PIN",
+            on_success=after_enter_pin,
+            secondary_text="Forgot",
+            on_secondary=open_forgot_pin_from_unlock,
+        )
+
     def handle_work_schedule_menu_action(self, callback):
         self.work_schedule_dropdown_open = False
         if self.work_schedule_dropdown is not None:
             self.work_schedule_dropdown.place_forget()
+
+        self.task_dropdown_open = False
+        if self.task_dropdown is not None:
+            self.task_dropdown.place_forget()
+
+        self.update_idletasks()
+        callback()
+
+    def handle_task_menu_action(self, callback):
+        self.task_dropdown_open = False
+        if self.task_dropdown is not None:
+            self.task_dropdown.place_forget()
 
         self.update_idletasks()
         callback()
@@ -1090,6 +1471,14 @@ class MainAppPage(ctk.CTkFrame):
 
         if self.work_schedule_button is not None:
             self.work_schedule_button.configure(
+                fg_color=BTN_IDLE,
+                hover_color=BTN_IDLE_HOVER,
+                text_color=TEXT_MAIN,
+                border_color=BTN_IDLE,
+            )
+
+        if self.task_button is not None:
+            self.task_button.configure(
                 fg_color=BTN_IDLE,
                 hover_color=BTN_IDLE_HOVER,
                 text_color=TEXT_MAIN,
@@ -1187,17 +1576,11 @@ class MainAppPage(ctk.CTkFrame):
         self.set_active_nav("SQL")
         self.clear_content_frame()
 
-        self.create_section_title(
-            self.content_frame,
-            "SQL",
-            "Tra cứu và thao tác dữ liệu SQL.",
-        )
-
         page_host = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        page_host.pack(fill="both", expand=True, padx=18, pady=(0, 18))
+        page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
 
         try:
-            sql_page = SQLPage(page_host)
+            sql_page = SQLPage(page_host, current_user=self.user)
             sql_page.pack(fill="both", expand=True)
         except Exception:
             self.create_fallback_text(
@@ -1226,26 +1609,30 @@ class MainAppPage(ctk.CTkFrame):
         link_data_page = LinkDataPage(page_host)
         link_data_page.pack(fill="both", expand=True)
 
-    def show_process_page(self):
-        if not self.can_access("Cách xử lý"):
-            self.show_access_denied("Cách xử lý")
+    def show_process_page(self, initial_section="report"):
+        if not self.can_access("Task"):
+            self.show_access_denied("Task")
             return
 
         self.hide_top_menus()
-        self.set_active_nav("Cách xử lý")
+        self.set_active_nav("Task")
         self.clear_content_frame()
 
         self.create_section_title(
             self.content_frame,
-            "Cách xử lý",
-            "Quy trình và hướng dẫn xử lý nội bộ.",
+            "Task",
+            "Khu vực task sẽ được build trước.",
         )
 
         page_host = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        page_host.pack(fill="both", expand=True, padx=18, pady=(0, 18))
+        page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
 
         try:
-            process_page = ProcessPage(page_host)
+            process_page = ProcessPage(
+                page_host,
+                initial_section=initial_section,
+                current_user=self.user,
+            )
             process_page.pack(fill="both", expand=True)
         except Exception:
             self.create_fallback_text(
@@ -1613,6 +2000,9 @@ class MainAppPage(ctk.CTkFrame):
 
     def handle_click_outside(self, event):
         try:
+            if not self.winfo_exists():
+                return
+
             widget = event.widget
 
             parent = widget
@@ -1639,6 +2029,18 @@ class MainAppPage(ctk.CTkFrame):
                     return
                 parent = parent.master
 
+            parent = widget
+            while parent is not None:
+                if parent == self.task_button:
+                    return
+                parent = parent.master
+
+            parent = widget
+            while parent is not None:
+                if parent == self.task_dropdown:
+                    return
+                parent = parent.master
+
             self.hide_top_menus()
 
         except Exception:
@@ -1646,8 +2048,15 @@ class MainAppPage(ctk.CTkFrame):
 
         # đảm bảo luôn đóng dropdown
         self.work_schedule_dropdown_open = False
-        if self.work_schedule_dropdown is not None:
+        if (
+            self.work_schedule_dropdown is not None
+            and self.work_schedule_dropdown.winfo_exists()
+        ):
             self.work_schedule_dropdown.place_forget()
+
+        self.task_dropdown_open = False
+        if self.task_dropdown is not None and self.task_dropdown.winfo_exists():
+            self.task_dropdown.place_forget()
 
     def open_change_password_with_pin(self):
         username = self.user.get("username", "").strip()
@@ -1691,7 +2100,7 @@ class MainAppPage(ctk.CTkFrame):
             on_secondary=open_forgot_pin_from_password,
         )
 
-    def open_create_pin_flow(self):
+    def open_create_pin_flow(self, on_completed=None):
         username = self.user.get("username", "").strip()
 
         first_pin_holder = {"value": None}
@@ -1714,7 +2123,10 @@ class MainAppPage(ctk.CTkFrame):
 
                 if result.get("success"):
                     messagebox.showinfo("Success", "PIN created successfully.")
-                    self.handle_change_password()
+                    if on_completed is not None:
+                        on_completed()
+                    else:
+                        self.handle_change_password()
                 else:
                     messagebox.showerror(
                         "PIN Error",

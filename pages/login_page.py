@@ -200,6 +200,7 @@ class LoginPage(ctk.CTkFrame):
         if result.get("success"):
             user = {
                 "username": result.get("username"),
+                "full_name": result.get("full_name", ""),
                 "role": result.get("role"),
                 "department": result.get("department", "Technical Support"),
                 "team": result.get("team", "General"),

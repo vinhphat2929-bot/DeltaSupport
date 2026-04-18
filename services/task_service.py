@@ -1,0 +1,153 @@
+from copy import deepcopy
+
+import requests
+
+from services.auth_service import API_BASE_URL
+
+
+TASK_STATUSES = [
+    "FOLLOW",
+    "FOLLOW REQUEST",
+    "CHECK TRACKING NUMBER",
+    "SET UP & TRAINING",
+    "MISS TIP / CHARGE BACK",
+    "DONE",
+    "DEMO",
+]
+
+
+def _normalize_text(value):
+    return str(value or "").strip()
+
+
+def _normalize_task(task):
+    item = deepcopy(task or {})
+    item["task_id"] = item.get("task_id")
+    item["task_date"] = _normalize_text(item.get("task_date"))
+    item["merchant_raw"] = _normalize_text(item.get("merchant_raw"))
+    item["merchant_name"] = _normalize_text(item.get("merchant_name"))
+    item["zip_code"] = _normalize_text(item.get("zip_code"))
+    item["phone"] = _normalize_text(item.get("phone"))
+    item["problem"] = _normalize_text(item.get("problem"))
+    item["handoff_from_username"] = _normalize_text(item.get("handoff_from_username"))
+    item["handoff_from"] = _normalize_text(item.get("handoff_from"))
+    item["handoff_to_type"] = _normalize_text(item.get("handoff_to_type")).upper() or "TEAM"
+    item["handoff_to_username"] = _normalize_text(item.get("handoff_to_username"))
+    item["handoff_to"] = _normalize_text(item.get("handoff_to")) or "Tech Team"
+    item["status"] = _normalize_text(item.get("status")).upper() or "FOLLOW"
+    item["deadline"] = _normalize_text(item.get("deadline"))
+    item["deadline_date"] = _normalize_text(item.get("deadline_date"))
+    item["deadline_time"] = _normalize_text(item.get("deadline_time")) or "02:00"
+    item["deadline_period"] = _normalize_text(item.get("deadline_period")).upper() or "AM"
+    item["note"] = _normalize_text(item.get("note"))
+    item["updated_at"] = _normalize_text(item.get("updated_at"))
+    item["history"] = item.get("history") or []
+    item["is_optimistic"] = bool(item.get("is_optimistic"))
+    item["is_saving"] = bool(item.get("is_saving"))
+    item["error"] = _normalize_text(item.get("error"))
+    return item
+
+
+def _normalize_handoff_option(option):
+    return {
+        "username": _normalize_text((option or {}).get("username")),
+        "display_name": _normalize_text((option or {}).get("display_name")) or "Tech Team",
+        "type": _normalize_text((option or {}).get("type")).upper() or "TEAM",
+    }
+
+
+class TaskService:
+    def get_tasks(self, action_by, show_all=False, include_done=False):
+        try:
+            response = requests.get(
+                f"{API_BASE_URL}/task-follows",
+                params={
+                    "action_by": action_by,
+                    "show_all": bool(show_all),
+                    "include_done": bool(include_done),
+                },
+                timeout=20,
+            )
+            payload = response.json()
+        except requests.exceptions.Timeout:
+            return {"success": False, "message": "Timeout while loading follow tasks."}
+        except requests.exceptions.RequestException as exc:
+            return {"success": False, "message": f"API connection error: {exc}"}
+
+        if not payload.get("success"):
+            return payload
+
+        return {
+            "success": True,
+            "data": [_normalize_task(item) for item in payload.get("data", [])],
+            "search_scope": _normalize_text(payload.get("search_scope")) or "board",
+            "board_filter_applied": bool(payload.get("board_filter_applied")),
+            "show_all": bool(payload.get("show_all")),
+            "include_done": bool(payload.get("include_done")),
+        }
+
+    def get_task_detail(self, task_id, action_by=""):
+        try:
+            response = requests.get(
+                f"{API_BASE_URL}/task-follows/{task_id}",
+                params={"action_by": action_by},
+                timeout=20,
+            )
+            payload = response.json()
+        except requests.exceptions.Timeout:
+            return {"success": False, "message": "Timeout while loading task detail."}
+        except requests.exceptions.RequestException as exc:
+            return {"success": False, "message": f"API connection error: {exc}"}
+
+        if not payload.get("success"):
+            return payload
+
+        return {"success": True, "data": _normalize_task(payload.get("data"))}
+
+    def get_handoff_options(self, action_by):
+        try:
+            response = requests.get(
+                f"{API_BASE_URL}/task-follows/handoff-options",
+                params={"action_by": action_by},
+                timeout=20,
+            )
+            payload = response.json()
+        except requests.exceptions.Timeout:
+            return {"success": False, "message": "Timeout while loading handoff options."}
+        except requests.exceptions.RequestException as exc:
+            return {"success": False, "message": f"API connection error: {exc}"}
+
+        if not payload.get("success"):
+            return payload
+
+        return {
+            "success": True,
+            "current_display_name": _normalize_text(payload.get("current_display_name")),
+            "data": [_normalize_handoff_option(item) for item in payload.get("data", [])],
+        }
+
+    def create_task(self, payload):
+        try:
+            response = requests.post(
+                f"{API_BASE_URL}/task-follows",
+                json=payload,
+                timeout=25,
+            )
+            return response.json()
+        except requests.exceptions.Timeout:
+            return {"success": False, "message": "Timeout while creating task."}
+        except requests.exceptions.RequestException as exc:
+            return {"success": False, "message": f"API connection error: {exc}"}
+
+    def update_task(self, task_id, payload):
+        try:
+            response = requests.put(
+                f"{API_BASE_URL}/task-follows/{task_id}",
+                json=payload,
+                timeout=25,
+            )
+            return response.json()
+        except requests.exceptions.Timeout:
+            return {"success": False, "message": "Timeout while updating task."}
+        except requests.exceptions.RequestException as exc:
+            return {"success": False, "message": f"API connection error: {exc}"}

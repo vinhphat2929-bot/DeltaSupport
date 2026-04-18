@@ -118,3 +118,35 @@ class DeleteUserRequest(BaseModel):
     username: str
     action_by: str
     reason: str = ""
+
+
+class SyncCardToTicketLogRequest(BaseModel):
+    username: str
+    shop_raw_text: str
+    shop_name: str
+    zip_code: str
+    ticket_number: str
+    ticket_total_amount: str = ""
+    case_type: str = ""
+    final_guid: str = ""
+    card_dbh_id: str = ""
+    card_ref_num: str = ""
+    card_amount: str = ""
+    card_tip_amount: str = ""
+    card_l4: str = ""
+    note: str = ""
+
+
+class TaskFollowUpsertRequest(BaseModel):
+    action_by_username: str
+    merchant_raw_text: str
+    phone: str = ""
+    problem_summary: str = ""
+    handoff_to_type: str = ""
+    handoff_to_username: str = ""
+    handoff_to_display_name: str = ""
+    status: str
+    deadline_date: str = ""
+    deadline_time: str = ""
+    deadline_period: str = "AM"
+    note: str = ""
