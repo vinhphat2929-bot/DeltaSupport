@@ -2301,10 +2301,15 @@ class MainAppPage(ctk.CTkFrame):
                 initial_task_id=initial_task_id,
             )
             process_page.pack(fill="both", expand=True)
-        except Exception:
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"DEBUG: Error loading ProcessPage:\n{error_details}")
+            from tkinter import messagebox
+            messagebox.showerror("ProcessPage Error", f"Loi: {e}\n\nXem console de biet chi tiet.")
             self.create_fallback_text(
                 page_host,
-                "ProcessPage hiện chưa sẵn sàng hoặc đang lỗi import.",
+                f"ProcessPage dang loi: {e}",
             )
 
     def show_work_schedule_page(self):
