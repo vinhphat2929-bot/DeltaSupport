@@ -1,4 +1,5 @@
 import threading
+import threading
 import time
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -18,6 +19,9 @@ class TaskStore(BaseStore):
         self.include_done = False
         self._view_cache = {}
         self._temp_id_seed = -1
+        self._handoff_cache = {}
+        self._handoff_loading_keys = set()
+        self._last_handoff_key = None
 
     def _view_key(self, show_all=None, include_done=None):
         return (bool(self.show_all if show_all is None else show_all), bool(self.include_done if include_done is None else include_done))
@@ -120,22 +124,64 @@ class TaskStore(BaseStore):
             source="network",
         )
 
-    def load_handoff_options(self, action_by):
-        threading.Thread(target=self._handoff_worker, args=(action_by,), daemon=True).start()
-
-    def _handoff_worker(self, action_by):
-        result = self.service.get_handoff_options(action_by)
-        if not result.get("success"):
-            self.push_event("handoff_options_failed", message=result.get("message", "Unable to load handoff options."))
+    def load_handoff_options(self, action_by, task_date="", task_time="", task_period=""):
+        key = (
+            str(action_by or "").strip().lower(),
+            str(task_date or "").strip(),
+            str(task_time or "").strip(),
+            str(task_period or "").strip().upper(),
+        )
+        cached = self._handoff_cache.get(key)
+        if cached:
+            self.handoff_options = deepcopy(cached["options"])
+            self.current_display_name = cached["current_display_name"]
+            self._last_handoff_key = key
+            self.push_event(
+                "handoff_options_loaded",
+                options=deepcopy(self.handoff_options),
+                current_display_name=self.current_display_name,
+                source="cache",
+            )
             return
 
-        self.handoff_options = result.get("data") or self.handoff_options
-        self.current_display_name = result.get("current_display_name", "") or action_by
-        self.push_event(
-            "handoff_options_loaded",
-            options=deepcopy(self.handoff_options),
-            current_display_name=self.current_display_name,
-        )
+        if key == self._last_handoff_key or key in self._handoff_loading_keys:
+            return
+
+        self._handoff_loading_keys.add(key)
+        threading.Thread(
+            target=self._handoff_worker,
+            args=(key, action_by, task_date, task_time, task_period),
+            daemon=True,
+        ).start()
+
+    def _handoff_worker(self, key, action_by, task_date, task_time, task_period):
+        try:
+            result = self.service.get_handoff_options(
+                action_by,
+                task_date=task_date,
+                task_time=task_time,
+                task_period=task_period,
+            )
+            if not result.get("success"):
+                self.push_event("handoff_options_failed", message=result.get("message", "Unable to load handoff options."))
+                return
+
+            self.handoff_options = result.get("data") or self.handoff_options
+            self.current_display_name = result.get("current_display_name", "") or action_by
+            self._handoff_cache[key] = {
+                "loaded_at": time.monotonic(),
+                "options": deepcopy(self.handoff_options),
+                "current_display_name": self.current_display_name,
+            }
+            self._last_handoff_key = key
+            self.push_event(
+                "handoff_options_loaded",
+                options=deepcopy(self.handoff_options),
+                current_display_name=self.current_display_name,
+                source="network",
+            )
+        finally:
+            self._handoff_loading_keys.discard(key)
 
     def filter_local(self, query):
         keyword = str(query or "").strip().lower()
@@ -160,6 +206,15 @@ class TaskStore(BaseStore):
         return filtered
 
     def ensure_detail(self, task_id, action_by=""):
+        try:
+            if int(task_id) < 0:
+                item = self.get_by_id(task_id)
+                if item:
+                    self.push_event("task_detail_loaded", item=item)
+                return
+        except Exception:
+            return
+
         item = self.get_by_id(task_id)
         if not item or item.get("history"):
             if item:
@@ -241,12 +296,28 @@ class TaskStore(BaseStore):
                 "handoff_from": actor_display_name or source.get("handoff_from", ""),
                 "handoff_to_type": payload.get("handoff_to_type", source.get("handoff_to_type", "TEAM")),
                 "handoff_to_username": payload.get("handoff_to_username", source.get("handoff_to_username", "")),
+                "handoff_to_usernames": deepcopy(
+                    payload.get("handoff_to_usernames", source.get("handoff_to_usernames", []))
+                ),
+                "handoff_to_display_names": deepcopy(
+                    payload.get("handoff_to_display_names", source.get("handoff_to_display_names", []))
+                ),
                 "handoff_to": payload.get("handoff_to_display_name", source.get("handoff_to", "Tech Team")),
                 "status": payload.get("status", source.get("status", "FOLLOW")),
                 "deadline_date": payload.get("deadline_date", source.get("deadline_date", "")),
                 "deadline_time": payload.get("deadline_time", source.get("deadline_time", "02:00")),
                 "deadline_period": payload.get("deadline_period", source.get("deadline_period", "AM")),
                 "note": payload.get("note", source.get("note", "")),
+                "training_form": deepcopy(payload.get("training_form", source.get("training_form", []))),
+                "training_started_at": payload.get("training_started_at", source.get("training_started_at", "")),
+                "training_started_by_username": payload.get(
+                    "training_started_by_username",
+                    source.get("training_started_by_username", ""),
+                ),
+                "training_started_by_display_name": payload.get(
+                    "training_started_by_display_name",
+                    source.get("training_started_by_display_name", ""),
+                ),
                 "updated_at": datetime.now().strftime("%d-%m-%Y %I:%M %p"),
                 "history": source.get("history", []),
                 "is_optimistic": True,

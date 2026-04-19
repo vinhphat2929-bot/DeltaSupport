@@ -50,12 +50,20 @@
         "0b4d752c-963b-49c7-8052-847d8cab6e61"
       ],
       "removed_guids": []
+    },
+    "v passion nail lounge": {
+      "display_name": "V PASSION NAIL LOUNGE",
+      "used_guids": [
+        "6ae82427-404a-494f-9ba1-b2a0bc48c76a"
+      ],
+      "removed_guids": []
     }
   },
   "global_used_guids": [
     "0b4d752c-963b-49c7-8052-847d8cab6e61",
     "1efc6c47-5ca1-466d-b880-cb3685e9cf22",
     "38699566-3cfc-476f-a600-96b1fd165522",
+    "6ae82427-404a-494f-9ba1-b2a0bc48c76a",
     "f0689d75-e17f-4030-b920-9dc4a3524497"
   ]
 }

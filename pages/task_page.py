@@ -278,10 +278,12 @@ class TaskPage(ctk.CTkFrame):
         self.deadline_time_combo = ctk.CTkComboBox(deadline_wrap, values=["08:00", "08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00", "12:30", "01:00", "01:30", "02:00", "02:30", "03:00", "03:30", "04:00", "04:30", "05:00", "05:30", "06:00", "06:30", "07:00", "07:30"], width=108, height=36, fg_color=INPUT_BG, border_color=INPUT_BORDER, button_color=BTN_ACTIVE, button_hover_color=BTN_ACTIVE_HOVER, text_color=TEXT_DARK, dropdown_fg_color=INPUT_BG, dropdown_text_color=TEXT_DARK)
         self.deadline_time_combo.grid(row=1, column=1, sticky="w", padx=(10, 8))
         self.deadline_time_combo.set("02:00")
+        self.deadline_time_combo.configure(command=lambda _v=None: self.refresh_handoff_options_from_deadline())
 
         self.deadline_period_combo = ctk.CTkComboBox(deadline_wrap, values=["AM", "PM"], width=72, height=36, fg_color=INPUT_BG, border_color=INPUT_BORDER, button_color=BTN_ACTIVE, button_hover_color=BTN_ACTIVE_HOVER, text_color=TEXT_DARK, dropdown_fg_color=INPUT_BG, dropdown_text_color=TEXT_DARK)
         self.deadline_period_combo.grid(row=1, column=2, sticky="w")
         self.deadline_period_combo.set("AM")
+        self.deadline_period_combo.configure(command=lambda _v=None: self.refresh_handoff_options_from_deadline())
 
         self.create_section_label(11, "Note")
         self.note_box = ctk.CTkTextbox(self.detail_card, height=110, fg_color=INPUT_BG, border_color=INPUT_BORDER, border_width=1, text_color=TEXT_DARK, corner_radius=12)
@@ -321,13 +323,30 @@ class TaskPage(ctk.CTkFrame):
     def bind_events(self):
         self.search_entry.bind("<KeyRelease>", self.on_search_key_release)
         self.phone_entry.bind("<KeyRelease>", self.on_phone_input)
+        self.deadline_date_entry.bind("<FocusOut>", self.on_deadline_focus_out)
 
     def bootstrap(self):
         self.update_filter_controls()
         self.store.set_view(show_all=self.follow_show_all, include_done=self.follow_include_done)
-        self.store.load_handoff_options(self.current_username)
+        self.store.load_handoff_options(self.current_username, task_date="")
         self.request_load(force=False)
         self.poll_store_events()
+
+    def on_deadline_focus_out(self, _event=None):
+        self.refresh_handoff_options_from_deadline()
+
+    def refresh_handoff_options_from_deadline(self):
+        if not self.current_username:
+            return
+        deadline_date = self.deadline_date_entry.get().strip()
+        if not deadline_date or not self.is_valid_deadline_date(deadline_date):
+            return
+        self.store.load_handoff_options(
+            self.current_username,
+            task_date=deadline_date,
+            task_time=self.deadline_time_combo.get().strip(),
+            task_period=self.deadline_period_combo.get().strip(),
+        )
 
     def poll_store_events(self):
         for event in self.store.drain_events():
@@ -540,6 +559,13 @@ class TaskPage(ctk.CTkFrame):
         self.handoff_combo.set(self.active_task.get("handoff_to", "Tech Team"))
         self.status_combo.set(self.active_task.get("status", TASK_STATUSES[0]))
         self.set_entry_value(self.deadline_date_entry, self.active_task.get("deadline_date", ""))
+        if self.current_username and self.active_task.get("deadline_date"):
+            self.store.load_handoff_options(
+                self.current_username,
+                task_date=self.active_task.get("deadline_date"),
+                task_time=self.active_task.get("deadline_time", ""),
+                task_period=self.active_task.get("deadline_period", ""),
+            )
         self.deadline_time_combo.set(self.active_task.get("deadline_time", "02:00"))
         self.deadline_period_combo.set(self.active_task.get("deadline_period", "AM"))
         self.note_box.delete("1.0", "end")

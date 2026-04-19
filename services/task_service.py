@@ -10,6 +10,7 @@ TASK_STATUSES = [
     "FOLLOW REQUEST",
     "CHECK TRACKING NUMBER",
     "SET UP & TRAINING",
+    "2ND TRAINING",
     "MISS TIP / CHARGE BACK",
     "DONE",
     "DEMO",
@@ -33,6 +34,16 @@ def _normalize_task(task):
     item["handoff_from"] = _normalize_text(item.get("handoff_from"))
     item["handoff_to_type"] = _normalize_text(item.get("handoff_to_type")).upper() or "TEAM"
     item["handoff_to_username"] = _normalize_text(item.get("handoff_to_username"))
+    item["handoff_to_usernames"] = [
+        _normalize_text(value)
+        for value in (item.get("handoff_to_usernames") or [])
+        if _normalize_text(value)
+    ]
+    item["handoff_to_display_names"] = [
+        _normalize_text(value)
+        for value in (item.get("handoff_to_display_names") or [])
+        if _normalize_text(value)
+    ]
     item["handoff_to"] = _normalize_text(item.get("handoff_to")) or "Tech Team"
     item["status"] = _normalize_text(item.get("status")).upper() or "FOLLOW"
     item["deadline"] = _normalize_text(item.get("deadline"))
@@ -41,6 +52,10 @@ def _normalize_task(task):
     item["deadline_period"] = _normalize_text(item.get("deadline_period")).upper() or "AM"
     item["note"] = _normalize_text(item.get("note"))
     item["updated_at"] = _normalize_text(item.get("updated_at"))
+    item["training_form"] = item.get("training_form") or []
+    item["training_started_at"] = _normalize_text(item.get("training_started_at"))
+    item["training_started_by_username"] = _normalize_text(item.get("training_started_by_username"))
+    item["training_started_by_display_name"] = _normalize_text(item.get("training_started_by_display_name"))
     item["history"] = item.get("history") or []
     item["is_optimistic"] = bool(item.get("is_optimistic"))
     item["is_saving"] = bool(item.get("is_saving"))
@@ -56,7 +71,92 @@ def _normalize_handoff_option(option):
     }
 
 
+def _normalize_notification_item(item):
+    payload = item or {}
+    task_id = payload.get("task_id")
+    return {
+        "id": _normalize_text(payload.get("id")) or (f"task-{task_id}" if task_id not in ("", None) else ""),
+        "task_id": task_id,
+        "title": _normalize_text(payload.get("title")) or "New task assigned",
+        "meta": _normalize_text(payload.get("meta")) or "Tap to open Task Follow",
+        "task_section": _normalize_text(payload.get("task_section")) or "follow",
+        "is_read": bool(payload.get("is_read")),
+    }
+
+
 class TaskService:
+    def get_notification_items(self, action_by):
+        try:
+            response = requests.get(
+                f"{API_BASE_URL}/task-follows/notifications",
+                params={"action_by": action_by},
+                timeout=20,
+            )
+            payload = response.json()
+        except requests.exceptions.Timeout:
+            return {"success": False, "message": "Timeout while loading notifications."}
+        except requests.exceptions.RequestException as exc:
+            return {"success": False, "message": f"API connection error: {exc}"}
+
+        if not payload.get("success"):
+            return payload
+
+        return {
+            "success": True,
+            "unread_count": max(0, int(payload.get("unread_count", 0) or 0)),
+            "data": [_normalize_notification_item(item) for item in payload.get("data", [])],
+        }
+
+    def mark_notifications_as_read(self, action_by, task_ids):
+        try:
+            normalized_task_ids = []
+            for raw_task_id in task_ids or []:
+                try:
+                    task_id = int(raw_task_id)
+                except (TypeError, ValueError):
+                    continue
+                if task_id > 0 and task_id not in normalized_task_ids:
+                    normalized_task_ids.append(task_id)
+
+            response = requests.post(
+                f"{API_BASE_URL}/task-follows/notifications/read",
+                json={
+                    "action_by_username": action_by,
+                    "task_ids": normalized_task_ids,
+                },
+                timeout=20,
+            )
+            return response.json()
+        except requests.exceptions.Timeout:
+            return {"success": False, "message": "Timeout while syncing notification read status."}
+        except requests.exceptions.RequestException as exc:
+            return {"success": False, "message": f"API connection error: {exc}"}
+
+    def clear_notifications(self, action_by, task_ids):
+        try:
+            normalized_task_ids = []
+            for raw_task_id in task_ids or []:
+                try:
+                    task_id = int(raw_task_id)
+                except (TypeError, ValueError):
+                    continue
+                if task_id > 0 and task_id not in normalized_task_ids:
+                    normalized_task_ids.append(task_id)
+
+            response = requests.post(
+                f"{API_BASE_URL}/task-follows/notifications/clear",
+                json={
+                    "action_by_username": action_by,
+                    "task_ids": normalized_task_ids,
+                },
+                timeout=20,
+            )
+            return response.json()
+        except requests.exceptions.Timeout:
+            return {"success": False, "message": "Timeout while clearing notifications."}
+        except requests.exceptions.RequestException as exc:
+            return {"success": False, "message": f"API connection error: {exc}"}
+
     def get_tasks(self, action_by, show_all=False, include_done=False):
         try:
             response = requests.get(
@@ -104,11 +204,16 @@ class TaskService:
 
         return {"success": True, "data": _normalize_task(payload.get("data"))}
 
-    def get_handoff_options(self, action_by):
+    def get_handoff_options(self, action_by, task_date="", task_time="", task_period=""):
         try:
             response = requests.get(
                 f"{API_BASE_URL}/task-follows/handoff-options",
-                params={"action_by": action_by},
+                params={
+                    "action_by": action_by,
+                    "task_date": str(task_date or "").strip(),
+                    "task_time": str(task_time or "").strip(),
+                    "task_period": str(task_period or "").strip(),
+                },
                 timeout=20,
             )
             payload = response.json()

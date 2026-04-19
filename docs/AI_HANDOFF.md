@@ -99,6 +99,12 @@ Rule:
 - khong refactor ca app mot luc
 - neu chi sua frontend/store/service local thi khong can copy len may chu
 - chi khi sua backend local copy moi can copy len may chu va restart backend
+- Trang thai moi nhat:
+  - da co persistent `NOTICE` read/unread
+  - da co handoff nhieu user
+  - da co notice cho `Tech Team` (department `Technical Support`)
+  - da co log `ASSIGN` rieng va UI history gom assign + note trong cung 1 card
+  - user da chot Task Follow tai day, khong tu y mo lai chi de "lam dep them"
 
 ## 6. Checklist neu cham vung nhay cam
 

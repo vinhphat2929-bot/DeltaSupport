@@ -1,4 +1,4 @@
-from typing import List
+from typing import Any, Dict, List
 
 from pydantic import BaseModel
 
@@ -150,3 +150,19 @@ class TaskFollowUpsertRequest(BaseModel):
     deadline_time: str = ""
     deadline_period: str = "AM"
     note: str = ""
+    handoff_to_usernames: List[str] = []
+    handoff_to_display_names: List[str] = []
+    training_form: List[Dict[str, Any]] = []
+    training_started_at: str = ""
+    training_started_by_username: str = ""
+    training_started_by_display_name: str = ""
+
+
+class TaskFollowNotificationReadRequest(BaseModel):
+    action_by_username: str
+    task_ids: List[int] = []
+
+
+class TaskFollowNotificationClearRequest(BaseModel):
+    action_by_username: str
+    task_ids: List[int] = []

@@ -1,8 +1,10 @@
 import os
+import tkinter as tk
 import customtkinter as ctk
 from PIL import Image
 from tkinter import messagebox
 from datetime import datetime
+import time
 
 from pages.pos_page import POSPage
 from pages.sql_page import SQLPage
@@ -24,6 +26,7 @@ from services.auth_service import (
     send_forgot_pin_otp_api,
     reset_pin_with_otp_api,
 )
+from stores.notification_store import NotificationStore
 
 # =========================================================
 # DELTA ASSISTANT - DARK EARTH THEME
@@ -100,6 +103,34 @@ class MainAppPage(ctk.CTkFrame):
         self.app_name_label = None
         self.version_label = None
         self.welcome_label = None
+        self.notification_container = None
+        self.notification_circle = None
+        self.notification_label = None
+        self.notification_badge = None
+        self.notification_icon_label = None
+        self.notification_unread_count = 0
+        self.notification_last_unread_count = 0
+        self.notification_popup = None
+        self.notification_canvas = None
+        self.notification_scrollbar = None
+        self.notification_refresh_button = None
+        self.notification_read_all_button = None
+        self.notification_clear_all_button = None
+        self.notification_row_hits = []
+        self.notification_items = []
+        self.notification_poll_after_id = None
+        self.notification_refresh_after_id = None
+        self.notification_refresh_interval_ms = 30000
+        self.notification_fast_refresh_interval_ms = 8000
+        self.notification_fast_window_ms = 90000
+        self.notification_fast_poll_until = 0.0
+        self.notification_action_cooldown_ms = 3000
+        self.notification_action_ready_at = {}
+        self.notification_action_inflight = set()
+        self.notification_action_after_ids = {}
+        self.startup_gate_after_id = None
+        self.startup_gate_pending = True
+        self.notification_store = NotificationStore()
         self.settings_container = None
         self.settings_circle = None
         self.settings_label = None
@@ -139,12 +170,20 @@ class MainAppPage(ctk.CTkFrame):
 
         self.tooltip_window = None
 
+        self.notification_store.seed(
+            items=self.user.get("notification_items", []) or [],
+            unread_count=self.user.get("notification_unread_count", 0),
+        )
+
         self.build_ui()
         self.update_clock()
         self.after(300, self.setup_click_outside)
 
         self.after(150, self.reflow_header_layout)
         self.after(200, self.show_welcome_page)
+        self.after(220, self.poll_notification_store_events)
+        self.after(350, self.start_notification_sync)
+        self.startup_gate_after_id = self.after(2200, self.finish_initial_startup)
 
     # =========================================================
     # HELPERS
@@ -211,6 +250,534 @@ class MainAppPage(ctk.CTkFrame):
             widget.bind("<Button-1>", on_click)
 
         apply_state(False)
+
+    def set_notification_badge_count(self, count):
+        try:
+            count_value = max(0, int(count))
+        except Exception:
+            count_value = 0
+
+        self.notification_unread_count = count_value
+        if self.notification_badge is None:
+            return
+
+        if count_value <= 0:
+            self.notification_badge.place_forget()
+            return
+
+        badge_text = str(count_value if count_value < 100 else "99+")
+        self.notification_badge.configure(text=badge_text)
+        self.notification_badge.place(relx=0.82, rely=0.18, anchor="center")
+
+    def build_notification_items(self):
+        items = self.notification_store.get_all() or self.user.get("notification_items", []) or []
+        normalized = []
+        for index, item in enumerate(items):
+            normalized.append(
+                {
+                    "id": item.get("id", f"notif-{index}"),
+                    "task_id": item.get("task_id"),
+                    "title": str(item.get("title", "")).strip() or "New task assigned",
+                    "meta": str(item.get("meta", "")).strip() or "Tap to open Task Follow",
+                    "task_section": str(item.get("task_section", "follow")).strip() or "follow",
+                    "is_read": bool(item.get("is_read")),
+                }
+            )
+        return normalized
+
+    def _notification_action_is_locked(self, action_key):
+        if action_key in self.notification_action_inflight:
+            return True
+        return time.monotonic() < self.notification_action_ready_at.get(action_key, 0.0)
+
+    def _sync_notification_action_button_states(self):
+        button_specs = [
+            (self.notification_refresh_button, "manual_refresh", True),
+            (
+                self.notification_read_all_button,
+                "read_all",
+                bool(self.notification_items) and self.notification_unread_count > 0,
+            ),
+            (
+                self.notification_clear_all_button,
+                "clear_all",
+                bool(self.notification_items),
+            ),
+        ]
+        for button, action_key, has_items in button_specs:
+            if button is None or not button.winfo_exists():
+                continue
+            is_locked = self._notification_action_is_locked(action_key) or not has_items
+            button.configure(
+                state="disabled" if is_locked else "normal",
+                fg_color="#6b5847" if is_locked else "#3b3027",
+                hover_color="#6b5847" if is_locked else "#514136",
+            )
+
+    def _schedule_notification_action_state_refresh(self, action_key):
+        existing_after_id = self.notification_action_after_ids.get(action_key)
+        if existing_after_id:
+            try:
+                self.after_cancel(existing_after_id)
+            except Exception:
+                pass
+
+        if action_key in self.notification_action_inflight:
+            self.notification_action_after_ids[action_key] = None
+            return
+
+        remaining_ms = int(
+            max(0.0, self.notification_action_ready_at.get(action_key, 0.0) - time.monotonic()) * 1000
+        )
+        if remaining_ms <= 0:
+            self.notification_action_after_ids[action_key] = None
+            self._sync_notification_action_button_states()
+            return
+
+        self.notification_action_after_ids[action_key] = self.after(
+            remaining_ms,
+            self._sync_notification_action_button_states,
+        )
+
+    def _start_notification_action(self, action_key):
+        if self._notification_action_is_locked(action_key):
+            return False
+
+        self.notification_action_inflight.add(action_key)
+        self.notification_action_ready_at[action_key] = time.monotonic() + (
+            self.notification_action_cooldown_ms / 1000.0
+        )
+        self._schedule_notification_action_state_refresh(action_key)
+        self._sync_notification_action_button_states()
+        return True
+
+    def _finish_notification_action(self, action_key):
+        self.notification_action_inflight.discard(action_key)
+        self._schedule_notification_action_state_refresh(action_key)
+        self._sync_notification_action_button_states()
+
+    def enable_notification_fast_polling(self, duration_ms=None):
+        duration_value = self.notification_fast_window_ms if duration_ms is None else max(0, int(duration_ms))
+        self.notification_fast_poll_until = max(
+            self.notification_fast_poll_until,
+            time.monotonic() + (duration_value / 1000.0),
+        )
+
+    def get_notification_refresh_interval_ms(self):
+        if time.monotonic() < self.notification_fast_poll_until:
+            return self.notification_fast_refresh_interval_ms
+        return self.notification_refresh_interval_ms
+
+    def start_notification_sync(self):
+        self.enable_notification_fast_polling()
+        self.refresh_notification_items(force=False)
+        self.schedule_notification_refresh()
+
+    def refresh_notification_items(self, force=False):
+        username = str(self.user.get("username", "")).strip()
+        if not username:
+            return
+
+        self.notification_store.load(
+            username,
+            force=force,
+            background_if_stale=True,
+        )
+
+    def schedule_notification_refresh(self, delay_ms=None):
+        target_delay_ms = self.get_notification_refresh_interval_ms() if delay_ms is None else delay_ms
+        if self.notification_refresh_after_id:
+            try:
+                self.after_cancel(self.notification_refresh_after_id)
+            except Exception:
+                pass
+            self.notification_refresh_after_id = None
+        self.notification_refresh_after_id = self.after(
+            target_delay_ms,
+            lambda: self.refresh_notification_items(force=True),
+        )
+
+    def poll_notification_store_events(self):
+        for event in self.notification_store.drain_events():
+            self.handle_notification_store_event(event)
+        self.notification_poll_after_id = self.after(180, self.poll_notification_store_events)
+
+    def handle_notification_store_event(self, event):
+        event_type = event.get("type")
+
+        if event_type == "notifications_loading":
+            return
+
+        if event_type == "notifications_loaded":
+            items = event.get("items", []) or []
+            unread_count = event.get("unread_count", len(items))
+            previous_unread_count = self.notification_last_unread_count
+            self.notification_last_unread_count = unread_count
+            self.user["notification_items"] = items
+            self.user["notification_unread_count"] = unread_count
+            self.notification_items = self.build_notification_items()
+            self.set_notification_badge_count(unread_count)
+            if self.notification_popup is not None and self.notification_popup.winfo_exists():
+                self.redraw_notification_canvas()
+                self._sync_notification_action_button_states()
+            if event.get("source") == "network":
+                if unread_count > previous_unread_count:
+                    self.enable_notification_fast_polling()
+                self.schedule_notification_refresh()
+                self._finish_notification_action("manual_refresh")
+            if event.get("source") in {"local-read-all", "local-read"}:
+                self._finish_notification_action("read_all")
+            return
+
+        if event_type == "notifications_load_failed":
+            self._finish_notification_action("manual_refresh")
+            self.schedule_notification_refresh()
+            return
+
+        if event_type == "notifications_cleared":
+            items = event.get("items", []) or []
+            unread_count = event.get("unread_count", 0)
+            self.notification_last_unread_count = unread_count
+            self.user["notification_items"] = items
+            self.user["notification_unread_count"] = unread_count
+            self.notification_items = self.build_notification_items()
+            self.set_notification_badge_count(unread_count)
+            if self.notification_popup is not None and self.notification_popup.winfo_exists():
+                self.redraw_notification_canvas()
+                self._sync_notification_action_button_states()
+            self._finish_notification_action("clear_all")
+            return
+
+        if event_type == "notifications_clear_failed":
+            self._finish_notification_action("clear_all")
+            messagebox.showerror("NOTICE", event.get("message", "Khong clear duoc notifications."))
+            return
+
+    def toggle_notification_popup(self):
+        if self.notification_popup is not None and self.notification_popup.winfo_exists():
+            self.hide_notification_popup()
+            return
+        self.show_notification_popup()
+
+    def show_notification_popup(self):
+        if self.notification_container is None or not self.notification_container.winfo_exists():
+            return
+
+        self.hide_top_menus(preserve_notification=True)
+        self.enable_notification_fast_polling()
+        self.refresh_notification_items()
+        self.notification_items = self.build_notification_items()
+        self.update_idletasks()
+
+        popup_width = 360
+        visible_count = max(1, min(4, len(self.notification_items)))
+        canvas_height = 78 if not self.notification_items else min(280, visible_count * 70 + max(0, visible_count - 1) * 10 + 10)
+        popup_height = canvas_height + 128
+
+        notice_center_x = (
+            self.notification_container.winfo_rootx()
+            + (self.notification_container.winfo_width() // 2)
+        )
+        popup_x = max(12, notice_center_x - popup_width // 2)
+        popup_y = self.notification_container.winfo_rooty() + self.notification_container.winfo_height() + 10
+
+        host = self.winfo_toplevel()
+        host.update_idletasks()
+        host_x = host.winfo_rootx()
+        host_y = host.winfo_rooty()
+        local_popup_x = max(12, popup_x - host_x)
+        local_popup_y = max(12, popup_y - host_y)
+
+        popup = ctk.CTkFrame(
+            host,
+            bg_color="transparent",
+            fg_color="#251d17",
+            corner_radius=22,
+            border_width=1,
+            border_color="#b78a52",
+            width=popup_width,
+            height=popup_height,
+        )
+        popup.place(x=local_popup_x, y=local_popup_y)
+        popup.lift()
+        self.notification_popup = popup
+        popup.grid_columnconfigure(0, weight=1)
+        popup.grid_columnconfigure(1, weight=0)
+        popup.configure(height=popup_height)
+
+        ctk.CTkLabel(
+            popup,
+            text="Notifications",
+            font=("Segoe UI", 14, "bold"),
+            text_color=TEXT_MAIN,
+        ).grid(row=0, column=0, sticky="w", padx=18, pady=(14, 4))
+
+        self.notification_refresh_button = ctk.CTkButton(
+            popup,
+            text="↻",
+            width=30,
+            height=28,
+            corner_radius=10,
+            fg_color="#3b3027",
+            hover_color="#514136",
+            text_color=TEXT_MAIN,
+            font=("Segoe UI Symbol", 14, "bold"),
+            command=self.on_manual_notification_refresh,
+        )
+        self.notification_refresh_button.grid(row=0, column=1, sticky="e", padx=(0, 16), pady=(12, 4))
+        self._sync_notification_action_button_states()
+
+        ctk.CTkLabel(
+            popup,
+            text="Unread task updates",
+            font=("Segoe UI", 10),
+            text_color=TEXT_SUB,
+        ).grid(row=1, column=0, sticky="w", padx=18, pady=(0, 12))
+
+        canvas_wrap = ctk.CTkFrame(
+            popup,
+            bg_color="#251d17",
+            fg_color="#1f1813",
+            corner_radius=18,
+            border_width=1,
+            border_color="#6c5237",
+        )
+        canvas_wrap.grid(row=2, column=0, columnspan=2, padx=14, pady=(0, 14), sticky="nsew")
+        canvas_wrap.grid_columnconfigure(0, weight=1)
+        canvas_wrap.grid_rowconfigure(0, weight=1)
+
+        self.notification_canvas = tk.Canvas(
+            canvas_wrap,
+            width=popup_width - 52,
+            height=canvas_height,
+            bg="#1f1813",
+            highlightthickness=0,
+            bd=0,
+        )
+        self.notification_canvas.grid(row=0, column=0, padx=(8, 0), pady=8, sticky="nsew")
+        self.notification_scrollbar = ctk.CTkScrollbar(
+            canvas_wrap,
+            orientation="vertical",
+            fg_color="#1f1813",
+            button_color="#7b5b39",
+            button_hover_color="#9a7348",
+            command=self.notification_canvas.yview,
+            width=12,
+        )
+        self.notification_scrollbar.grid(row=0, column=1, padx=(6, 8), pady=8, sticky="ns")
+        self.notification_canvas.configure(yscrollcommand=self.notification_scrollbar.set)
+        self.notification_canvas.bind("<Button-1>", self.on_notification_canvas_click)
+
+        footer_row = ctk.CTkFrame(popup, fg_color="transparent")
+        footer_row.grid(row=3, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 12))
+        footer_row.grid_columnconfigure(0, weight=1)
+
+        self.notification_read_all_button = ctk.CTkButton(
+            footer_row,
+            text="Read all",
+            width=76,
+            height=28,
+            corner_radius=10,
+            fg_color="#3b3027",
+            hover_color="#514136",
+            text_color=TEXT_MAIN,
+            font=("Segoe UI", 10, "bold"),
+            command=self.on_notification_read_all,
+        )
+        self.notification_read_all_button.grid(row=0, column=1, sticky="e", padx=(0, 8))
+
+        self.notification_clear_all_button = ctk.CTkButton(
+            footer_row,
+            text="Clear all",
+            width=80,
+            height=28,
+            corner_radius=10,
+            fg_color="#3b3027",
+            hover_color="#514136",
+            text_color=TEXT_MAIN,
+            font=("Segoe UI", 10, "bold"),
+            command=self.on_notification_clear_all,
+        )
+        self.notification_clear_all_button.grid(row=0, column=2, sticky="e")
+
+        self.redraw_notification_canvas()
+        self._sync_notification_action_button_states()
+
+    def hide_notification_popup(self):
+        popup = self.notification_popup
+        if popup is not None and popup.winfo_exists():
+            popup.place_forget()
+            popup.destroy()
+        self.notification_popup = None
+        self.notification_canvas = None
+        self.notification_scrollbar = None
+        self.notification_refresh_button = None
+        self.notification_read_all_button = None
+        self.notification_clear_all_button = None
+        self.notification_row_hits = []
+
+    def on_manual_notification_refresh(self):
+        if not self._start_notification_action("manual_refresh"):
+            return
+        self.enable_notification_fast_polling()
+        self.refresh_notification_items(force=True)
+
+    def on_notification_read_all(self):
+        if not self._start_notification_action("read_all"):
+            return
+        self.notification_store.mark_all_as_read(
+            action_by=str(self.user.get("username", "")).strip(),
+        )
+
+    def on_notification_clear_all(self):
+        if not self._start_notification_action("clear_all"):
+            return
+        self.notification_store.clear_all(
+            action_by=str(self.user.get("username", "")).strip(),
+        )
+
+    def destroy(self):
+        self.hide_notification_popup()
+        try:
+            self.notification_store.flush_pending_reads()
+        except Exception:
+            pass
+        if self.notification_poll_after_id:
+            try:
+                self.after_cancel(self.notification_poll_after_id)
+            except Exception:
+                pass
+            self.notification_poll_after_id = None
+        if self.notification_refresh_after_id:
+            try:
+                self.after_cancel(self.notification_refresh_after_id)
+            except Exception:
+                pass
+            self.notification_refresh_after_id = None
+        for after_id in list(self.notification_action_after_ids.values()):
+            if after_id:
+                try:
+                    self.after_cancel(after_id)
+                except Exception:
+                    pass
+        self.notification_action_after_ids = {}
+        if self.startup_gate_after_id:
+            try:
+                self.after_cancel(self.startup_gate_after_id)
+            except Exception:
+                pass
+            self.startup_gate_after_id = None
+        super().destroy()
+
+    def redraw_notification_canvas(self):
+        canvas = self.notification_canvas
+        if canvas is None:
+            return
+
+        canvas.delete("all")
+        self.notification_row_hits = []
+        items = self.notification_items or []
+
+        if not items:
+            canvas.create_text(
+                160,
+                28,
+                text="No new notifications.",
+                fill=TEXT_SUB,
+                font=("Segoe UI", 12, "bold"),
+            )
+            canvas.create_text(
+                160,
+                52,
+                text="When there is a new task, it will show here.",
+                fill=TEXT_SUB,
+                font=("Segoe UI", 10),
+            )
+            canvas.configure(scrollregion=(0, 0, int(canvas.cget("width")), int(canvas.cget("height"))))
+            return
+
+        x1 = 8
+        x2 = int(canvas.cget("width")) - 10
+        row_height = 66
+        gap = 10
+        y = 8
+
+        for item in items[:]:
+            y1 = y
+            y2 = y + row_height
+            is_read = bool(item.get("is_read"))
+            self.draw_round_rect(
+                canvas,
+                x1,
+                y1,
+                x2,
+                y2,
+                16,
+                "#34291f" if not is_read else "#40362f",
+                "#8a633b" if not is_read else "#5d4a3a",
+            )
+            if not is_read:
+                canvas.create_oval(
+                    x2 - 18,
+                    y1 + 28,
+                    x2 - 8,
+                    y1 + 38,
+                    fill=BTN_ACTIVE,
+                    outline="",
+                )
+            canvas.create_text(
+                x1 + 16,
+                y1 + 20,
+                text=item["title"],
+                anchor="w",
+                fill=TEXT_MAIN if not is_read else "#d8cec2",
+                font=("Segoe UI", 10, "bold"),
+                width=max(120, x2 - x1 - 44),
+            )
+            canvas.create_text(
+                x1 + 16,
+                y1 + 45,
+                text=item["meta"],
+                anchor="w",
+                fill=TEXT_SUB if not is_read else "#a99a8a",
+                font=("Segoe UI", 9),
+                width=max(120, x2 - x1 - 44),
+            )
+            self.notification_row_hits.append((x1, y1, x2, y2, item))
+            y += row_height + gap
+
+        canvas.configure(scrollregion=(0, 0, int(canvas.cget("width")), y))
+
+    def draw_round_rect(self, canvas, x1, y1, x2, y2, radius, fill, outline):
+        points = [
+            x1 + radius, y1,
+            x2 - radius, y1,
+            x2, y1,
+            x2, y1 + radius,
+            x2, y2 - radius,
+            x2, y2,
+            x2 - radius, y2,
+            x1 + radius, y2,
+            x1, y2,
+            x1, y2 - radius,
+            x1, y1 + radius,
+            x1, y1,
+        ]
+        canvas.create_polygon(points, smooth=True, fill=fill, outline=outline)
+
+    def on_notification_canvas_click(self, event):
+        for x1, y1, x2, y2, item in self.notification_row_hits:
+            if x1 <= event.x <= x2 and y1 <= event.y <= y2:
+                self.notification_store.mark_as_read(
+                    item.get("id"),
+                    action_by=str(self.user.get("username", "")).strip(),
+                )
+                self.hide_notification_popup()
+                self.show_process_page(
+                    item.get("task_section", "follow"),
+                    initial_task_id=item.get("task_id"),
+                )
+                return
 
     def get_role(self):
         return str(self.user.get("role", "TS Junior")).strip()
@@ -346,9 +913,22 @@ class MainAppPage(ctk.CTkFrame):
         self.after(50, self.reflow_header_layout)
 
     def start_function_experience(self):
+        self.startup_gate_pending = False
+        if self.startup_gate_after_id:
+            try:
+                self.after_cancel(self.startup_gate_after_id)
+            except Exception:
+                pass
+            self.startup_gate_after_id = None
         self.functions_started = True
         self.update_function_visibility()
         self.show_welcome_page()
+
+    def finish_initial_startup(self):
+        self.startup_gate_after_id = None
+        if not self.winfo_exists() or self.functions_started:
+            return
+        self.start_function_experience()
 
     def set_active_nav(self, active_name):
         self.current_page = active_name
@@ -756,6 +1336,72 @@ class MainAppPage(ctk.CTkFrame):
             btn.pack(fill="x", padx=10, pady=(10 if i == 0 else 6, 0))
 
         self.task_dropdown.place_forget()
+
+        # ===== NOTIFICATION =====
+        self.notification_container = ctk.CTkFrame(
+            self.right_cluster,
+            fg_color="transparent",
+            width=76,
+            height=70,
+        )
+        self.notification_container.pack(side="left", padx=(0, 14), pady=(8, 0))
+        self.notification_container.grid_propagate(False)
+
+        self.notification_circle = ctk.CTkFrame(
+            self.notification_container,
+            width=44,
+            height=44,
+            corner_radius=22,
+            fg_color=BTN_IDLE,
+            border_width=1,
+            border_color=TOPBAR_BORDER,
+        )
+        self.notification_circle.pack(pady=(0, 3))
+        self.notification_circle.pack_propagate(False)
+
+        self.notification_icon_label = ctk.CTkLabel(
+            self.notification_circle,
+            text="🔔",
+            font=("Segoe UI Symbol", 16, "bold"),
+            text_color=TEXT_MAIN,
+        )
+        self.notification_icon_label.place(relx=0.5, rely=0.5, anchor="center")
+
+        self.notification_badge = ctk.CTkLabel(
+            self.notification_circle,
+            text="0",
+            width=18,
+            height=18,
+            corner_radius=9,
+            fg_color="#dc2626",
+            text_color="#ffffff",
+            font=("Segoe UI", 9, "bold"),
+        )
+
+        self.notification_label = ctk.CTkLabel(
+            self.notification_container,
+            text="NOTICE",
+            font=("Segoe UI", 9),
+            text_color=TEXT_SUB,
+        )
+        self.notification_label.pack()
+
+        def _open_notifications(event=None):
+            self.toggle_notification_popup()
+
+        self._bind_topbar_action(
+            self.notification_container,
+            self.notification_circle,
+            self.notification_icon_label,
+            self.notification_label,
+            _open_notifications,
+            BTN_IDLE,
+            BTN_IDLE_HOVER,
+        )
+        initial_unread_count = self.user.get("notification_unread_count", 0)
+        if not initial_unread_count:
+            initial_unread_count = len(self.build_notification_items())
+        self.set_notification_badge_count(initial_unread_count)
 
         # ===== CLOCK =====
         self.clock_outer = ctk.CTkFrame(
@@ -1250,7 +1896,7 @@ class MainAppPage(ctk.CTkFrame):
         except Exception:
             pass
 
-    def hide_top_menus(self):
+    def hide_top_menus(self, preserve_notification=False):
         self.menu_open = False
         if self.overlay_menu_frame is not None:
             self.overlay_menu_frame.place_forget()
@@ -1258,6 +1904,13 @@ class MainAppPage(ctk.CTkFrame):
         self.work_schedule_dropdown_open = False
         if self.work_schedule_dropdown is not None:
             self.work_schedule_dropdown.place_forget()
+
+        self.task_dropdown_open = False
+        if self.task_dropdown is not None:
+            self.task_dropdown.place_forget()
+
+        if not preserve_notification:
+            self.hide_notification_popup()
 
         if self.menu_toggle_btn is not None:
             self.menu_toggle_btn.configure(
@@ -1522,7 +2175,20 @@ class MainAppPage(ctk.CTkFrame):
             text_color=TEXT_MUTED_DARK,
         ).pack(pady=(0, 24))
 
-        if not self.functions_started:
+        if not self.functions_started and self.startup_gate_pending:
+            ctk.CTkLabel(
+                hero_box,
+                text="Loading Tasks...",
+                font=("Segoe UI", 14, "bold"),
+                text_color=TEXT_MUTED_DARK,
+            ).pack()
+            ctk.CTkLabel(
+                hero_box,
+                text="Please wait a moment.",
+                font=("Segoe UI", 13),
+                text_color=TEXT_MUTED_DARK,
+            ).pack(pady=(6, 0))
+        elif not self.functions_started:
             ctk.CTkButton(
                 hero_box,
                 text="Start",
@@ -1609,7 +2275,7 @@ class MainAppPage(ctk.CTkFrame):
         link_data_page = LinkDataPage(page_host)
         link_data_page.pack(fill="both", expand=True)
 
-    def show_process_page(self, initial_section="report"):
+    def show_process_page(self, initial_section="report", initial_task_id=None):
         if not self.can_access("Task"):
             self.show_access_denied("Task")
             return
@@ -1632,6 +2298,7 @@ class MainAppPage(ctk.CTkFrame):
                 page_host,
                 initial_section=initial_section,
                 current_user=self.user,
+                initial_task_id=initial_task_id,
             )
             process_page.pack(fill="both", expand=True)
         except Exception:
@@ -2041,6 +2708,18 @@ class MainAppPage(ctk.CTkFrame):
                     return
                 parent = parent.master
 
+            parent = widget
+            while parent is not None:
+                if parent == self.notification_container:
+                    return
+                parent = parent.master
+
+            parent = widget
+            while parent is not None:
+                if parent == self.notification_popup:
+                    return
+                parent = parent.master
+
             self.hide_top_menus()
 
         except Exception:
@@ -2057,6 +2736,8 @@ class MainAppPage(ctk.CTkFrame):
         self.task_dropdown_open = False
         if self.task_dropdown is not None and self.task_dropdown.winfo_exists():
             self.task_dropdown.place_forget()
+
+        self.hide_notification_popup()
 
     def open_change_password_with_pin(self):
         username = self.user.get("username", "").strip()
