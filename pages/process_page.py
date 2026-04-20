@@ -101,6 +101,7 @@ class ProcessPage(ctk.CTkFrame):
         self.follow_tasks = []
         self.filtered_follow_tasks = []
         self.active_task = None
+        self.training_popup = None
         self.training_result_vars = {}
         self.training_note_entries = {}
         self.training_note_values = {}
@@ -209,7 +210,7 @@ class ProcessPage(ctk.CTkFrame):
             self.current_task_section = section_key
             self.selected_status = self.get_default_task_status()
 
-        if section_key == "follow":
+        if section_key in {"follow", "setup_training"}:
             self.header_card.grid_remove()
         else:
             self.header_card.grid()
@@ -263,9 +264,7 @@ class ProcessPage(ctk.CTkFrame):
 
     def get_training_template_sections(self, stage_key=None):
         return self.logic.get_training_template_sections(
-            stage_key or self.get_training_stage_key(),
-            self.logic.first_template,
-            self.logic.second_template
+            stage_key or self.get_training_stage_key()
         )
 
     def merge_training_form_with_template(self, saved_sections, stage_key=None):
@@ -281,12 +280,12 @@ class ProcessPage(ctk.CTkFrame):
         # Row 1: Tên tiệm + Zip code (đứng chung)
         merchant_label = str(current_task.get("merchant_name", "")).strip() or str(current_task.get("merchant_raw", "")).strip()
         zip_code = str(current_task.get("zip_code", "")).strip()
-        if zip_code:
+        if zip_code and zip_code not in merchant_label:
             merchant_label = f"{merchant_label}  {zip_code}".strip()
-        if hasattr(self, "training_merchant_label"):
+        if hasattr(self, "training_merchant_label") and self.training_merchant_label:
             self.training_merchant_label.configure(text=merchant_label or "-")
 
-        # Row 2: Ngày hẹn (deadline_date từ task)
+        # Row 2: Ngày hẹn
         deadline_date = str(current_task.get("deadline_date", "")).strip()
         deadline_time = str(current_task.get("deadline_time", "")).strip()
         deadline_period = str(current_task.get("deadline_period", "")).strip()
@@ -296,66 +295,199 @@ class ProcessPage(ctk.CTkFrame):
             date_label = f"Ngay hen: {deadline_date}"
         else:
             date_label = "Ngay hen: -"
-        if hasattr(self, "training_date_label"):
+        if hasattr(self, "training_date_label") and self.training_date_label:
             self.training_date_label.configure(text=date_label)
 
         # Row 3: Status badge (màu theo status)
         is_second = self.get_training_stage_key(current_task) == "second"
         stage_text = "2nd Training" if is_second else "1st Setup & Training"
         stage_color = "#0ea5a3" if is_second else "#9333ea"
-        if hasattr(self, "training_stage_badge"):
+        if hasattr(self, "training_stage_badge") and self.training_stage_badge:
             self.training_stage_badge.configure(text=stage_text, fg_color=stage_color)
 
+        if hasattr(self, "follow_complete_training_button"):
+            self.follow_complete_training_button.configure(text="Complete 2nd Training" if is_second else "Complete 1st Training")
+
     def render_setup_training_sections(self, saved_sections):
-        if not hasattr(self, "training_canvas") or self.training_canvas is None:
+        if not hasattr(self, "training_list_frame") or self.training_list_frame is None:
             return
 
+        for child in self.training_list_frame.winfo_children():
+            child.destroy()
         self.training_result_vars = {}
         self.training_note_entries = {}
         self.training_note_values = {}
-        self.training_canvas_window_map = {}
-        sections = self.merge_training_form_with_template(saved_sections, self.get_training_stage_key())
         self.training_canvas_flat_rows = []
-        for section in sections:
-            self.training_canvas_flat_rows.append(
-                {
-                    "kind": "banner",
-                    "section_key": section["section_key"],
-                    "title": section["title"],
-                    "subtitle": str(section.get("subtitle", "")).strip(),
-                }
-            )
-            self.training_canvas_flat_rows.append(
-                {
-                    "kind": "columns",
-                    "section_key": section["section_key"],
-                }
-            )
-            for row in section.get("rows", []):
-                self.training_canvas_flat_rows.append(
-                    {
-                        "kind": row.get("kind", "normal"),
-                        "section_key": section["section_key"],
-                        "step": row["step"],
-                        "label": row["label"],
-                        "result": row.get("result", ""),
-                        "note": row.get("note", ""),
-                    }
-                )
-        self.redraw_training_canvas()
-        self.schedule_training_canvas_refresh()
 
-    def estimate_training_row_height(self, row):
+        sections = self.merge_training_form_with_template(saved_sections, self.get_training_stage_key())
+        parent = self.training_list_frame
+
+        def _btn_colors(v):
+            v = str(v).upper()
+            if v == "DONE": return "#ef4444", "#dc2626", "#ffffff", "DONE"
+            if v == "X":    return "#f59e0b", "#d97706", "#ffffff", "X"
+            return "#e8e0d5", "#d4c9bb", "#7a6a5a", "—"
+
+        alt = 0  # alternating row counter
+
+        for section in sections:
+            sk = section["section_key"]
+
+            # ── Banner ─────────────────────────────────────────────────────
+            banner = ctk.CTkFrame(parent, fg_color=self.TRAINING_BANNER_BG, corner_radius=0)
+            banner.pack(fill="x")
+            ctk.CTkLabel(banner, text=section["title"], font=("Segoe UI", 12, "bold"),
+                         text_color="#1a1a1a", anchor="center", justify="center"
+                         ).pack(fill="x", padx=12, pady=(8, 2))
+            subtitle = str(section.get("subtitle", "")).strip()
+            if subtitle:
+                sub_color = "#b91c1c" if sk != "second_training" else "#374151"
+                ctk.CTkLabel(banner, text=subtitle, font=("Segoe UI", 9, "bold"),
+                             text_color=sub_color, anchor="center", justify="center",
+                             wraplength=480).pack(fill="x", padx=12, pady=(0, 8))
+
+            # ── Column header ───────────────────────────────────────────────
+            hdr = ctk.CTkFrame(parent, fg_color=self.TRAINING_SUBHEADER_BG, corner_radius=0, height=30)
+            hdr.pack(fill="x")
+            hdr.pack_propagate(False)
+            ctk.CTkLabel(hdr, text="STEP", font=("Segoe UI", 9, "bold"), text_color="#2d2d2d",
+                         width=42, anchor="center").pack(side="left", padx=(2, 0))
+            ctk.CTkFrame(hdr, fg_color="#b0a090", width=1).pack(side="left", fill="y", pady=3)
+            ctk.CTkLabel(hdr, text="LIST", font=("Segoe UI", 9, "bold"), text_color="#2d2d2d",
+                         anchor="w").pack(side="left", fill="x", expand=True, padx=8)
+            ctk.CTkFrame(hdr, fg_color="#b0a090", width=1).pack(side="left", fill="y", pady=3)
+            ctk.CTkLabel(hdr, text="Result", font=("Segoe UI", 9, "bold"), text_color="#2d2d2d",
+                         width=72, anchor="center").pack(side="left", padx=(0, 4))
+
+            # ── Rows ────────────────────────────────────────────────────────
+            for row in section.get("rows", []):
+                kind = row.get("kind", "normal")
+                row_key = (sk, str(row.get("step", "")), str(row.get("label", "")))
+                flat_entry = {
+                    "kind": kind, "section_key": sk,
+                    "step": row.get("step", ""), "label": row.get("label", ""),
+                    "result": row.get("result", ""), "note": row.get("note", ""),
+                }
+                self.training_canvas_flat_rows.append(flat_entry)
+
+                if kind == "group":
+                    grp = ctk.CTkFrame(parent, fg_color=self.TRAINING_GROUP_BG, corner_radius=0)
+                    grp.pack(fill="x")
+                    ctk.CTkLabel(grp, text=str(row.get("label", "")),
+                                 font=("Segoe UI", 10, "bold"), text_color="#1a1a1a",
+                                 anchor="center").pack(fill="x", padx=12, pady=5)
+                    continue
+
+                # Alternating BG
+                row_bg = "#ffffff" if alt % 2 == 0 else "#f7f3ed"
+                alt += 1
+
+                row_frame = ctk.CTkFrame(parent, fg_color=row_bg, corner_radius=0)
+                row_frame.pack(fill="x")
+
+                # STEP cell
+                ctk.CTkLabel(row_frame, text=str(row.get("step", "")),
+                             font=("Segoe UI", 10, "bold"), text_color="#777",
+                             width=42, anchor="center").pack(side="left", padx=(2, 0), pady=6, anchor="n")
+                ctk.CTkFrame(row_frame, fg_color="#e0d8ce", width=1).pack(side="left", fill="y", pady=3)
+
+                # LIST cell — takes all remaining space
+                label_text = str(row.get("label", "")).strip()
+                lbl = ctk.CTkLabel(row_frame, text=label_text, font=("Segoe UI", 10),
+                                   text_color="#1a1a1a", anchor="nw", justify="left",
+                                   wraplength=1)   # will be updated on configure
+                lbl.pack(side="left", fill="x", expand=True, padx=(8, 6), pady=6, anchor="n")
+
+                def _bind_wrap(w):
+                    def _on_conf(e, _w=w):
+                        new_w = max(80, e.width - 4)
+                        try: _w.configure(wraplength=new_w)
+                        except Exception: pass
+                    w.bind("<Configure>", _on_conf)
+                _bind_wrap(lbl)
+
+                ctk.CTkFrame(row_frame, fg_color="#e0d8ce", width=1).pack(side="left", fill="y", pady=3)
+
+                # RESULT toggle button
+                result_val = str(row.get("result", "")).strip().upper()
+                rv = tk.StringVar(value=result_val)
+                self.training_result_vars[row_key] = rv
+
+                fg, hv, tc, lb = _btn_colors(result_val)
+                btn = ctk.CTkButton(row_frame, text=lb, width=64, height=26, corner_radius=6,
+                                    fg_color=fg, hover_color=hv, text_color=tc,
+                                    font=("Segoe UI", 10, "bold"))
+
+                def _make_toggle(r, b, fe):
+                    def _t():
+                        cur = r.get().upper()
+                        nv = "DONE" if cur == "" else ("X" if cur == "DONE" else "")
+                        r.set(nv); fe["result"] = nv
+                        f2, h2, t2, l2 = _btn_colors(nv)
+                        b.configure(fg_color=f2, hover_color=h2, text_color=t2, text=l2)
+                    return _t
+
+                btn.configure(command=_make_toggle(rv, btn, flat_entry))
+                btn.pack(side="left", padx=4, pady=6, anchor="n")
+
+                # Bottom border
+                ctk.CTkFrame(parent, fg_color="#ddd5c8", height=1, corner_radius=0).pack(fill="x")
+
+
         return self.renderer.estimate_training_row_height(row)
+
+    def on_training_tab_change(self, selected_tab):
+        # Sequential guard (calls on_training_tab_change via checklist_tabs command)
+        self.on_training_tab_change_sequential(selected_tab)
+
+    def on_training_tab_change_sequential(self, selected_tab):
+        """Enforce sequential tabs, then re-render sections for new tab."""
+        completed = getattr(self, "completed_tabs", set())
+        TAB_ORDER = getattr(self, "TAB_ORDER", ["I. SET UP", "II. HƯỚNG DẪN", "III. THEO DÕI"])
+        if selected_tab in TAB_ORDER:
+            idx = TAB_ORDER.index(selected_tab)
+            if idx > 0:
+                prev_tab = TAB_ORDER[idx - 1]
+                if prev_tab not in completed:
+                    messagebox.showwarning(
+                        "Tab Locked",
+                        f"Ban can hoan thanh muc '{prev_tab}' truoc khi chuyen sang '{selected_tab}'.",
+                    )
+                    # Revert
+                    last_ok = next((TAB_ORDER[i] for i in range(idx - 1, -1, -1) if TAB_ORDER[i] in completed or i == 0), TAB_ORDER[0])
+                    if hasattr(self, "checklist_tabs"):
+                        self.checklist_tabs.set(last_ok)
+                    return
+        self.current_training_tab = selected_tab
+        # Re-render the list for the newly selected tab section
+        saved_sections = (self.active_task or {}).get("training_form") or []
+        self.render_setup_training_sections(saved_sections)
+
+    def get_current_section_key(self):
+        stage_key = self.get_training_stage_key()
+        if stage_key == "second":
+            return "second_training"
+            
+        tab = getattr(self, "current_training_tab", "I. SET UP")
+        if tab == "I. SET UP":
+            return "devices"
+        elif tab == "II. HƯỚNG DẪN":
+            return "pos"
+        elif tab == "III. THEO DÕI":
+            return "first_training"
+        return "devices"
 
     def redraw_training_canvas(self):
         canvas = getattr(self, "training_canvas", None)
         if canvas is None:
             return
+            
+        section_key = self.get_current_section_key()
+        filtered_rows = [row for row in self.training_canvas_flat_rows if row.get("section_key") == section_key]
         
         content_height, layout = self.renderer.redraw_training_canvas(
             canvas=canvas,
-            flat_rows=self.training_canvas_flat_rows,
+            flat_rows=filtered_rows,
             training_note_entries=self.training_note_entries,
             training_note_values=self.training_note_values,
             canvas_width=max(720, canvas.winfo_width()),
@@ -365,6 +497,8 @@ class ProcessPage(ctk.CTkFrame):
         )
         self.training_canvas_row_layout = layout
         self.training_canvas_content_height = content_height
+        if hasattr(canvas, "configure"):
+            canvas.configure(height=content_height)
 
     def schedule_training_canvas_refresh(self):
         if self.training_canvas_after_id:
@@ -382,6 +516,36 @@ class ProcessPage(ctk.CTkFrame):
         if self.training_canvas is not None:
             self.training_canvas.yview(*args)
             self.schedule_training_canvas_refresh()
+
+    def on_training_canvas_click(self, event):
+        canvas = getattr(self, "training_canvas", None)
+        if canvas is None:
+            return
+        # Convert screen coords to canvas coords (account for scroll)
+        cx = canvas.canvasx(event.x)
+        cy = canvas.canvasy(event.y)
+        for row in self.training_canvas_row_layout:
+            if row.get("kind") != "normal":
+                continue
+            hit = row.get("result_hit")
+            if not hit:
+                continue
+            x1, y1, x2, y2 = hit
+            if x1 <= cx <= x2 and y1 <= cy <= y2:
+                # Toggle: "" -> "DONE" -> "X" -> ""
+                cur = str(row.get("result", "")).strip().upper()
+                row["result"] = "DONE" if cur == "" else ("X" if cur == "DONE" else "")
+                # Sync lại flat_rows (cùng object reference nên update trực tiếp)
+                for flat_row in self.training_canvas_flat_rows:
+                    if (flat_row.get("kind") == "normal"
+                            and flat_row.get("section_key") == row.get("section_key")
+                            and flat_row.get("step") == row.get("step")
+                            and flat_row.get("label") == row.get("label")):
+                        flat_row["result"] = row["result"]
+                        break
+                self.redraw_training_canvas()
+                self.schedule_training_canvas_refresh()
+                return
 
     def refresh_visible_training_widgets(self):
         self.training_canvas_after_id = None
@@ -580,6 +744,7 @@ class ProcessPage(ctk.CTkFrame):
             "on_clear": self.clear_follow_search,
             "on_create": self.start_new_task,
             "on_toggle_show_all": self.toggle_follow_show_all,
+            "on_toggle_include_done": self.toggle_follow_include_done,
         }
 
         # Build Main Layout
@@ -588,6 +753,7 @@ class ProcessPage(ctk.CTkFrame):
         self.follow_top_card = layout_widgets["follow_top_card"]
         self.search_entry = layout_widgets["search_entry"]
         self.show_all_button = layout_widgets["show_all_button"]
+        self.include_done_switch = layout_widgets.get("include_done_switch")
         self.follow_board_card = layout_widgets["follow_board_card"]
         self.follow_canvas = layout_widgets["follow_canvas"]
         self.follow_scrollbar = layout_widgets["follow_scrollbar"]
@@ -615,34 +781,41 @@ class ProcessPage(ctk.CTkFrame):
             form_callbacks = {
                 "on_canvas_yview": self.on_training_canvas_yview,
                 "on_update": self.on_follow_update,
-                "on_complete_training": self.on_complete_first_training,
+                "on_complete_training": self.on_complete_training_stage,
                 "on_handoff_change": self.select_handoff,
+                "on_deadline_click": self.toggle_deadline_popup,
+                "on_tab_change": self.on_training_tab_change,
+                "on_start_training": self.on_start_training,
+                "on_complete_tab": self.on_complete_current_tab,
+                "on_view_training_info": self.on_view_training_info,
             }
             form_widgets = self.layout.build_setup_training_detail_form(self.detail_form, colors, form_callbacks, titles)
             
             self.detail_hint = form_widgets["detail_hint"]
             self.training_merchant_label = form_widgets["training_merchant_label"]
-            self.training_date_label = form_widgets["training_date_label"]
+            self.training_date_label = form_widgets.get("training_date_label")
             self.training_stage_badge = form_widgets["training_stage_badge"]
-            self.handoff_button_wrap = form_widgets["handoff_button_wrap"]
-            self.note_box = form_widgets["note_box"]
+            self.start_training_button = form_widgets["start_training_button"]
+            self.tab_wrap = form_widgets["tab_wrap"]
+            self.checklist_tabs = form_widgets["checklist_tabs"]
             self.training_sections_wrap = form_widgets["training_sections_wrap"]
-            self.training_canvas = form_widgets["training_canvas"]
-            self.training_canvas_scrollbar = form_widgets["training_canvas_scrollbar"]
+            self.training_canvas = form_widgets["training_canvas"]  # None (kept for compat)
+            self.training_list_frame = form_widgets["training_list_frame"]
+            self.action_row = form_widgets["action_row"]
             self.follow_update_button = form_widgets["follow_update_button"]
+            self.complete_tab_button = form_widgets["complete_tab_button"]
             self.follow_complete_training_button = form_widgets["follow_complete_training_button"]
+            self.view_training_info_button = form_widgets["view_training_info_button"]
             self.history_box = form_widgets["history_box"]
-            
-            self.training_canvas.bind("<Configure>", self.on_training_canvas_configure)
-            self.training_canvas.bind("<Enter>", lambda _e: self.set_active_scroll_target("training_canvas"))
-            self.training_canvas.bind("<Leave>", lambda _e: self.clear_active_scroll_target("training_canvas"))
+            self.is_training_started = False
+            self.completed_tabs = set()
+            # No canvas bindings needed for CTkScrollableFrame
         else:
             form_callbacks = {
                 "on_deadline_click": self.toggle_deadline_popup,
                 "on_status_change": self.select_status,
                 "on_save": self.on_follow_save,
                 "on_update": self.on_follow_update,
-                "on_start_training": self.open_setup_training_from_follow,
             }
             form_widgets = self.layout.build_follow_detail_form(self.detail_form, colors, form_callbacks, titles)
             
@@ -658,7 +831,6 @@ class ProcessPage(ctk.CTkFrame):
             self.note_box = form_widgets["note_box"]
             self.follow_save_button = form_widgets["follow_save_button"]
             self.follow_update_button = form_widgets["follow_update_button"]
-            self.follow_start_training_button = form_widgets["follow_start_training_button"]
             self.history_box = form_widgets["history_box"]
 
             self.phone_entry.bind("<KeyRelease>", self.on_phone_input)
@@ -702,6 +874,41 @@ class ProcessPage(ctk.CTkFrame):
         is_edit_mode = bool(self.active_task and self.active_task.get("task_id"))
 
         if self.is_setup_training_section():
+            started = getattr(self, "is_training_started", False)
+            task_status = str((self.active_task or {}).get("status", "")).strip().upper()
+            is_done_task = (task_status == "DONE")
+
+            if started:
+                # Hide start_wrap (start + view buttons)
+                if hasattr(self, "start_training_button"):
+                    self.start_training_button.master.grid_remove()
+                # Show tabs, sections, action row
+                if hasattr(self, "tab_wrap"): self.tab_wrap.grid()
+                if hasattr(self, "training_sections_wrap"): self.training_sections_wrap.grid()
+                if is_done_task:
+                    # View mode: hide action row completely
+                    if hasattr(self, "action_row"): self.action_row.grid_remove()
+                else:
+                    if hasattr(self, "action_row"): self.action_row.grid()
+            else:
+                # Show start_wrap
+                if hasattr(self, "start_training_button"):
+                    sw = self.start_training_button.master
+                    sw.grid()
+                    # Show correct button: Start or View
+                    if is_done_task:
+                        self.start_training_button.pack_forget()
+                        if hasattr(self, "view_training_info_button"):
+                            self.view_training_info_button.pack(side="left", pady=6)
+                    else:
+                        if hasattr(self, "view_training_info_button"):
+                            self.view_training_info_button.pack_forget()
+                        self.start_training_button.pack(side="left", padx=(0, 8), pady=6)
+                if hasattr(self, "tab_wrap"): self.tab_wrap.grid_remove()
+                if hasattr(self, "training_sections_wrap"): self.training_sections_wrap.grid_remove()
+                if hasattr(self, "action_row"): self.action_row.grid_remove()
+
+
             if hasattr(self, "follow_update_button"):
                 is_locked = self._follow_action_is_locked("update") or not is_edit_mode
                 self.follow_update_button.configure(
@@ -711,12 +918,17 @@ class ProcessPage(ctk.CTkFrame):
                     text_color="#f4eee7" if is_locked else self.TEXT_LIGHT,
                 )
             if hasattr(self, "follow_complete_training_button"):
+                stage_val = str((self.active_task or {}).get("status", "")).strip().upper()
+                is_second_stage = (stage_val == "2ND TRAINING")
+                btn_text = "Complete 2nd Training" if is_second_stage else "Complete 1st Training"
+                
                 can_complete = (
                     is_edit_mode
-                    and str((self.active_task or {}).get("status", "")).strip().upper() == "SET UP & TRAINING"
+                    and stage_val in {"SET UP & TRAINING", "2ND TRAINING"}
                     and not self._follow_action_is_locked("update")
                 )
                 self.follow_complete_training_button.configure(
+                    text=btn_text,
                     state="normal" if can_complete else "disabled",
                     fg_color=self.BTN_ACTIVE if can_complete else "#d9c7aa",
                     hover_color=self.BTN_ACTIVE_HOVER if can_complete else "#d9c7aa",
@@ -757,15 +969,6 @@ class ProcessPage(ctk.CTkFrame):
                     text_color="#f4eee7",
                 )
 
-        if hasattr(self, "follow_start_training_button"):
-            active_status = str((self.active_task or {}).get("status", "")).strip().upper()
-            can_start_training = is_edit_mode and active_status == "SET UP & TRAINING"
-            self.follow_start_training_button.configure(
-                state="normal" if can_start_training else "disabled",
-                fg_color="#0f766e" if can_start_training else "#9fb8b3",
-                hover_color="#115e59" if can_start_training else "#9fb8b3",
-                text_color=self.TEXT_LIGHT if can_start_training else "#edf3f1",
-            )
 
         self.refresh_follow_action_button_states()
 
@@ -839,6 +1042,65 @@ class ProcessPage(ctk.CTkFrame):
 
     def toggle_deadline_popup(self):
         self.ui_handler.toggle_deadline_popup()
+
+    def open_deadline_popup(self):
+        if not hasattr(self, "detail_form") or not hasattr(self, "deadline_picker_button"):
+            return
+
+        if self.pending_deadline_date and self.is_valid_deadline_date(self.pending_deadline_date):
+            pass
+        elif self.confirmed_deadline_date:
+            self.pending_deadline_date = self.confirmed_deadline_date
+            self.pending_deadline_time = self.confirmed_deadline_time
+        else:
+            self.pending_deadline_date = ""
+            self.pending_deadline_time = self.deadline_time_slots[0] if self.deadline_time_slots else ""
+
+        if self.pending_deadline_date:
+            try:
+                dt = datetime.strptime(self.pending_deadline_date, "%d-%m-%Y")
+                self.deadline_popup_month = dt.replace(day=1)
+            except Exception:
+                self.deadline_popup_month = datetime.now().replace(day=1)
+        else:
+            self.deadline_popup_month = datetime.now().replace(day=1)
+
+        colors = {
+            "INPUT_BORDER": self.INPUT_BORDER,
+            "BTN_DARK": self.BTN_DARK,
+            "BTN_DARK_HOVER": self.BTN_DARK_HOVER,
+            "TEXT_LIGHT": self.TEXT_LIGHT,
+            "TEXT_DARK": self.TEXT_DARK,
+            "INPUT_BG": self.INPUT_BG,
+            "BTN_ACTIVE": self.BTN_ACTIVE,
+            "BTN_ACTIVE_HOVER": self.BTN_ACTIVE_HOVER,
+        }
+        
+        callbacks = {
+            "on_prev_month": lambda: self.shift_deadline_popup_month(-1),
+            "on_next_month": lambda: self.shift_deadline_popup_month(1),
+            "on_cancel": self.close_deadline_popup,
+            "on_confirm": self.confirm_deadline_popup,
+        }
+
+        widgets = self.layout.build_deadline_popup(
+            self.detail_form,
+            self.deadline_picker_button,
+            colors,
+            callbacks,
+            self.deadline_time_slots
+        )
+        
+        self.deadline_popup_frame = widgets["popup_frame"]
+        self.deadline_month_label = widgets["month_label"]
+        self.deadline_calendar_canvas = widgets["calendar_canvas"]
+        self.deadline_popup_time_combo = widgets["time_combo"]
+
+        if self.pending_deadline_time:
+            self.deadline_popup_time_combo.set(self.pending_deadline_time)
+            
+        self.deadline_calendar_canvas.bind("<Button-1>", self.on_deadline_calendar_click)
+        self.redraw_deadline_calendar()
 
     def close_deadline_popup(self):
         self.ui_handler.close_deadline_popup()
@@ -996,7 +1258,7 @@ class ProcessPage(ctk.CTkFrame):
         if event_type in {"task_upserted", "task_removed"}:
             current_task_id = self.active_task.get("task_id") if self.active_task else None
             self.follow_tasks = self.store.get_all()
-            self.filtered_follow_tasks = self.store.filter_local(self.search_entry.get().strip())
+            self.filtered_follow_tasks = self.get_section_filtered_tasks(self.search_entry.get().strip())
             self.redraw_follow_canvas()
             if current_task_id:
                 current_item = self.store.get_by_id(current_task_id)
@@ -1009,7 +1271,7 @@ class ProcessPage(ctk.CTkFrame):
             self._finish_follow_action("update")
             messagebox.showerror(self.get_task_module_label(), event.get("message", "Khong luu duoc task."))
             self.follow_tasks = self.store.get_all()
-            self.filtered_follow_tasks = self.store.filter_local(self.search_entry.get().strip())
+            self.filtered_follow_tasks = self.get_section_filtered_tasks(self.search_entry.get().strip())
             self.redraw_follow_canvas()
             rollback_item = event.get("rollback_item")
             if rollback_item and event.get("action") == "update":
@@ -1092,14 +1354,27 @@ class ProcessPage(ctk.CTkFrame):
         }
         return self.service.build_follow_payload(form_data)
 
-    def collect_setup_training_payload(self, complete_first=False):
+    def collect_setup_training_payload(self, complete_first=False, complete_second=False, from_popup=False):
+        deadline_date, deadline_time, deadline_period = self.get_confirmed_deadline_parts()
+        
+        if from_popup:
+            note_val = self.popup_note_box.get("1.0", "end") if hasattr(self, "popup_note_box") else ""
+            handoffs = [self.selected_handoff_to] if hasattr(self, "selected_handoff_to") and self.selected_handoff_to else []
+        else:
+            note_val = self.note_box.get("1.0", "end") if hasattr(self, "note_box") else ""
+            handoffs = getattr(self, "selected_handoff_targets", [])
+
         form_data = {
-            "handoff_targets": self.selected_handoff_targets,
+            "handoff_targets": handoffs,
             "handoff_options": self.handoff_options,
-            "note": self.note_box.get("1.0", "end"),
+            "note": note_val,
             "training_form": self.collect_training_form_sections(),
+            "training_completed_tabs": list(getattr(self, "completed_tabs", set())),
+            "deadline_date": deadline_date,
+            "deadline_time": deadline_time,
+            "deadline_period": deadline_period,
         }
-        return self.service.build_training_payload(self.active_task, form_data, complete_first=complete_first)
+        return self.service.build_training_payload(self.active_task, form_data, complete_first=complete_first, complete_second=complete_second)
 
     def apply_follow_search(self):
         self.ui_handler.apply_follow_search()
@@ -1149,6 +1424,8 @@ class ProcessPage(ctk.CTkFrame):
             self.follow_show_all = True
         self.update_follow_filter_controls()
         self.refresh_follow_tasks(keep_selection=False)
+
+    toggle_follow_include_done = on_follow_include_done_toggle
 
     def clear_follow_search(self):
         self.ui_handler.clear_follow_search()
@@ -1313,25 +1590,20 @@ class ProcessPage(ctk.CTkFrame):
         canvas.delete("all")
         header_canvas.delete("all")
         self.canvas_row_hits = []
-        row_height = 44
-        row_gap = 6
-        content_padding = 46
-        header_height = 62
+        is_training = self.is_setup_training_section()
+        row_height = 88 if is_training else 44
+        row_gap = 10 if is_training else 6
+        content_padding = 12 if is_training else 46
+        header_height = 0 if is_training else 62
         scrollbar_height = 18
 
         canvas_width = max(canvas.winfo_width(), 640)
-        if self.is_setup_training_section():
-            header_ratios = [
-                ("Merchant", 0.48),
-                ("Next", 0.24),
-                ("Training", 0.28),
-            ]
-            min_widths = {
-                "Merchant": 130,
-                "Next": 90,
-                "Training": 120,
-            }
+        
+        if is_training:
+            header_canvas.grid_remove()
         else:
+            header_canvas.grid()
+        if not is_training:
             header_ratios = [
                 ("Merchant", 0.25),
                 ("Phone", 0.13),
@@ -1348,52 +1620,58 @@ class ProcessPage(ctk.CTkFrame):
                 "Deadline": 120,
                 "Status": 145,
             }
-        x = 14
-        y = 4
-        right_padding = 18
+            x = 14
+            y = 4
+            right_padding = 18
 
-        target_width = max(sum(min_widths.values()), canvas_width - (x * 2) - right_padding)
-        resolved_headers = []
-        used_width = 0
+            target_width = max(sum(min_widths.values()), canvas_width - (x * 2) - right_padding)
+            resolved_headers = []
+            used_width = 0
 
-        for index, (label, ratio) in enumerate(header_ratios):
-            if index == len(header_ratios) - 1:
-                col_width = max(min_widths[label], target_width - used_width)
-            else:
-                col_width = max(min_widths[label], int(target_width * ratio))
-            resolved_headers.append((label, col_width))
-            used_width += col_width
+            for index, (label, ratio) in enumerate(header_ratios):
+                if index == len(header_ratios) - 1:
+                    col_width = max(min_widths[label], target_width - used_width)
+                else:
+                    col_width = max(min_widths[label], int(target_width * ratio))
+                resolved_headers.append((label, col_width))
+                used_width += col_width
 
-        total_width = sum(col_width for _label, col_width in resolved_headers)
-        board_right = x + total_width
+            total_width = sum(col_width for _label, col_width in resolved_headers)
+            board_right = x + total_width
 
-        self.renderer.draw_round_rect(
-            header_canvas,
-            x,
-            6,
-            board_right,
-            6 + row_height,
-            14,
-            self.CANVAS_HEADER,
-            self.CANVAS_HEADER,
-        )
-
-        current_x = x
-        for label, col_width in resolved_headers:
-            header_canvas.create_text(
-                current_x + (col_width / 2),
-                6 + row_height / 2,
-                text=label,
-                anchor="center",
-                fill="#f7eedf",
-                font=("Segoe UI", 11, "bold"),
+            self.renderer.draw_round_rect(
+                header_canvas,
+                x,
+                6,
+                board_right,
+                6 + row_height,
+                14,
+                self.CANVAS_HEADER,
+                self.CANVAS_HEADER,
             )
-            current_x += col_width
 
-        header_canvas.configure(scrollregion=(0, 0, board_right + 10, row_height + 14))
-        header_canvas.xview_moveto(canvas.xview()[0])
+            current_x = x
+            for label, col_width in resolved_headers:
+                header_canvas.create_text(
+                    current_x + (col_width / 2),
+                    6 + row_height / 2,
+                    text=label,
+                    anchor="center",
+                    fill="#f7eedf",
+                    font=("Segoe UI", 11, "bold"),
+                )
+                current_x += col_width
 
-        y = 8
+            header_canvas.configure(scrollregion=(0, 0, board_right + 10, row_height + 14))
+            header_canvas.xview_moveto(canvas.xview()[0])
+            y = 8
+        else:
+            x = 14
+            y = 8
+            board_right = canvas_width - 24
+            resolved_headers = []
+
+
         tasks = self.filtered_follow_tasks or []
         content_height = header_height + content_padding
         if tasks:
@@ -1418,12 +1696,15 @@ class ProcessPage(ctk.CTkFrame):
             )
             canvas.configure(scrollregion=(0, 0, board_right + 10, y + 70))
             header_canvas.configure(scrollregion=(0, 0, board_right + 10, row_height + 14))
-            return
-
         for index, task in enumerate(tasks):
             row_top = y + (index * (row_height + 6))
             row_bottom = row_top + row_height
-            row_fill, row_text = self.get_task_row_theme(task, index)
+            if is_training:
+                row_fill = "#ffffff"
+                border_color = "#d1d5db"
+            else:
+                row_fill, row_text = self.get_task_row_theme(task, index)
+                border_color = "#e5d0ad"
 
             self.renderer.draw_round_rect(
                 canvas,
@@ -1433,32 +1714,71 @@ class ProcessPage(ctk.CTkFrame):
                 row_bottom,
                 12,
                 row_fill,
-                "#e5d0ad",
+                border_color,
             )
 
-            if self.is_setup_training_section():
-                stage_text = "Done 2nd" if str(task.get("status", "")).strip().upper() == "DONE" else (
-                    "2nd Training" if str(task.get("status", "")).strip().upper() == "2ND TRAINING" else "Done 1st"
+            if is_training:
+                stage_val = str(task.get("status", "")).strip().upper()
+                stage_text = "Done 2nd" if stage_val == "DONE" else (
+                    "2nd Training" if stage_val == "2ND TRAINING" else "1st Training"
                 )
-                values = [
-                    task["merchant_raw"],
-                    task["deadline"],
-                    stage_text,
-                ]
-                current_x = x
-                for col_index, (value, (_label, col_width)) in enumerate(zip(values, resolved_headers)):
-                    anchor = "w" if col_index == 0 else "center"
-                    text_x = current_x + 8 if col_index == 0 else current_x + (col_width / 2)
-                    canvas.create_text(
-                        text_x,
-                        row_top + row_height / 2,
-                        text=value,
-                        anchor=anchor,
-                        width=col_width - (16 if col_index == 0 else 10),
-                        fill=row_text,
-                        font=("Segoe UI", 8, "bold"),
-                    )
-                    current_x += col_width
+                stage_color = "#9333ea" if stage_val == "SET UP & TRAINING" else ("#0ea5a3" if stage_val == "2ND TRAINING" else "#ef4444")
+                
+                # Merchant + Zip Code
+                merchant_label = str(task.get("merchant_raw", "")).strip()
+                zip_code = str(task.get("zip_code", "")).strip()
+                if zip_code and zip_code not in merchant_label:
+                    merchant_label = f"{merchant_label}  {zip_code}".strip()
+
+                # Row 1: Merchant Name + Zip Code
+                canvas.create_text(
+                    x + 14,
+                    row_top + 18,
+                    text=merchant_label,
+                    anchor="w",
+                    width=max(50, board_right - x - 28),
+                    fill="#1f2937",
+                    font=("Segoe UI", 12, "bold"),
+                )
+                
+                # Row 2: Date
+                deadline_text = str(task.get("deadline", "")).strip()
+                if deadline_text:
+                    deadline_text = f"Hẹn: {deadline_text}"
+                else:
+                    deadline_text = "Hẹn: -"
+                
+                canvas.create_text(
+                    x + 14,
+                    row_top + 42,
+                    text=deadline_text,
+                    anchor="w",
+                    fill="#6b7280",
+                    font=("Segoe UI", 10),
+                )
+                
+                # Row 3: Status Badge
+                badge_y1 = row_top + 56
+                badge_y2 = row_top + 76
+                badge_x1 = x + 14
+                
+                # estimate width
+                canvas.create_text(0, 0, text=stage_text, font=("Segoe UI", 9, "bold"), tags="temp_text")
+                bbox = canvas.bbox("temp_text")
+                canvas.delete("temp_text")
+                text_width = bbox[2] - bbox[0] if bbox else 80
+                badge_x2 = badge_x1 + text_width + 16
+
+                self.renderer.draw_round_rect(
+                    canvas, badge_x1, badge_y1, badge_x2, badge_y2, 10, stage_color, stage_color
+                )
+                canvas.create_text(
+                    (badge_x1 + badge_x2) / 2,
+                    (badge_y1 + badge_y2) / 2,
+                    text=stage_text,
+                    fill="#ffffff",
+                    font=("Segoe UI", 9, "bold"),
+                )
             else:
                 values = [
                     task["merchant_raw"],
@@ -1571,8 +1891,8 @@ class ProcessPage(ctk.CTkFrame):
                     if part.strip()
                 ]
             self.set_selected_handoffs(target_names)
-            self.note_box.delete("1.0", "end")
-            self.note_box.insert("1.0", task["note"])
+            self.is_training_started = False
+            self.completed_tabs = set()
             self.update_training_info_card(task)
             self.render_setup_training_sections(task.get("training_form") or [])
             self.render_history(task["history"])
@@ -1618,8 +1938,9 @@ class ProcessPage(ctk.CTkFrame):
                 task_period=task.get("deadline_period", ""),
             )
 
-        self.note_box.delete("1.0", "end")
-        self.note_box.insert("1.0", task["note"])
+        if hasattr(self, "note_box") and self.note_box is not None:
+            self.note_box.delete("1.0", "end")
+            self.note_box.insert("1.0", task["note"])
 
         self.render_history(task["history"])
         self.update_follow_form_mode()
@@ -1630,7 +1951,6 @@ class ProcessPage(ctk.CTkFrame):
         self.detail_hint.configure(text=self.get_no_match_detail_hint())
 
         if self.is_setup_training_section():
-            self.note_box.delete("1.0", "end")
             self.set_selected_handoffs(["Tech Team"])
             self.update_training_info_card({})
             self.render_setup_training_sections([])
@@ -1664,26 +1984,189 @@ class ProcessPage(ctk.CTkFrame):
 
     def start_new_task(self):
         if self.is_setup_training_section():
-            messagebox.showinfo(
-                self.get_task_module_label(),
-                "Task Setup / Training duoc mo tu Task Follow co status Setup / Training.",
-            )
+            self.open_quick_create_task_popup()
             return
         self.active_task = None
         self.clear_follow_form()
         self.detail_hint.configure(text=self.get_new_task_hint())
 
+    def open_quick_create_task_popup(self):
+        """Quick-create popup for Setup/Training: just merchant name + zipcode."""
+        import customtkinter as _ctk
+        popup = _ctk.CTkToplevel(self.detail_form)
+        popup.title("Tao task Setup & Training")
+        popup.geometry("420x260")
+        popup.resizable(False, False)
+        popup.configure(fg_color="#fbf5ec")
+        popup.attributes("-topmost", True)
+        popup.transient(self.detail_form)
+        popup.update_idletasks()
+        px = self.detail_form.winfo_rootx() + self.detail_form.winfo_width() // 2 - 210
+        py = self.detail_form.winfo_rooty() + self.detail_form.winfo_height() // 2 - 130
+        popup.geometry(f"+{px}+{py}")
+        frame = _ctk.CTkFrame(popup, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=24, pady=20)
+        _ctk.CTkLabel(frame, text="Merchant Name & Zipcode", font=("Segoe UI", 13, "bold"),
+                      text_color=self.TEXT_DARK).pack(anchor="w", pady=(0, 6))
+        _ctk.CTkLabel(frame, text="Vi du: DIAMOND NAILS 12345",
+                      font=("Segoe UI", 10), text_color=self.TEXT_MUTED).pack(anchor="w", pady=(0, 8))
+        entry = _ctk.CTkEntry(frame, width=360, height=40, placeholder_text="MERCHANT NAME ZIPCODE",
+                              fg_color=self.INPUT_BG, border_color=self.INPUT_BORDER,
+                              text_color=self.TEXT_DARK, font=("Segoe UI", 13))
+        entry.pack(anchor="w", pady=(0, 16))
+        entry.focus()
+        btn_row = _ctk.CTkFrame(frame, fg_color="transparent")
+        btn_row.pack(anchor="w")
+
+        def on_cancel():
+            popup.destroy()
+
+        def on_create():
+            raw = entry.get().strip()
+            if not raw:
+                messagebox.showwarning("Create Task", "Vui long nhap ten tiem va zipcode.")
+                return
+            popup.destroy()
+            self._confirm_quick_create_task(raw)
+
+        _ctk.CTkButton(btn_row, text="Cancel", width=100, height=36, corner_radius=10,
+                       fg_color=self.BTN_DARK, hover_color=self.BTN_DARK_HOVER,
+                       text_color=self.TEXT_LIGHT, font=("Segoe UI", 12, "bold"),
+                       command=on_cancel).pack(side="left", padx=(0, 8))
+        _ctk.CTkButton(btn_row, text="Create", width=120, height=36, corner_radius=10,
+                       fg_color="#0f766e", hover_color="#115e59",
+                       text_color="#ffffff", font=("Segoe UI", 12, "bold"),
+                       command=on_create).pack(side="left")
+        entry.bind("<Return>", lambda _e: on_create())
+
+    def _confirm_quick_create_task(self, merchant_raw_text):
+        from datetime import datetime
+        now = datetime.now()
+        payload = {
+            "action_by_username": self.current_username,
+            "merchant_raw_text": merchant_raw_text,
+            "phone": "",
+            "problem_summary": "Setup + 1st Training",
+            "handoff_to_type": "TEAM",
+            "handoff_to_username": "",
+            "handoff_to_display_name": "Tech Team",
+            "handoff_to_usernames": [],
+            "handoff_to_display_names": ["Tech Team"],
+            "status": "SET UP & TRAINING",
+            "deadline_date": now.strftime("%d-%m-%Y"),
+            "deadline_time": now.strftime("%I:%M"),
+            "deadline_period": now.strftime("%p"),
+            "note": "",
+            "training_form": [],
+            "training_completed_tabs": [],
+            "training_started_at": "",
+        }
+        temp_id = self.store.create_item(
+            payload,
+            actor_display_name=self.current_display_name,
+            action_by=self.current_username,
+        )
+        self.follow_tasks = self.store.get_all()
+        self.filtered_follow_tasks = self.get_section_filtered_tasks(
+            self.search_entry.get().strip()
+        )
+        self.redraw_follow_canvas()
+        self.load_task_detail(temp_id)
+
     def open_setup_training_from_follow(self):
         self.ui_handler.open_setup_training_from_follow()
 
-    def on_complete_first_training(self):
+    def on_complete_training_stage(self):
         if not self.active_task or not self.active_task.get("task_id"):
-            messagebox.showwarning(self.get_task_module_label(), "Hay chon task can hoan tat 1st training.")
+            messagebox.showwarning(self.get_task_module_label(), "Hay chon task can hoan tat training.")
             return
+        self.open_training_completion_popup(action_type="complete")
 
-        payload, error_message = self.collect_setup_training_payload(complete_first=True)
+    def open_training_completion_popup(self, action_type="update"):
+        if self.training_popup:
+            try:
+                self.training_popup.destroy()
+            except:
+                pass
+            self.training_popup = None
+
+        callbacks = {
+            "on_popup_deadline_click": self.toggle_popup_deadline,
+            "on_popup_cancel": self.close_training_completion_popup,
+            "on_popup_confirm": lambda: self.confirm_training_save(action_type),
+        }
+        
+        # Build popup
+        w = self.layout.build_training_completion_popup(self.detail_form, self.colors, callbacks, self.deadline_time_slots)
+        self.training_popup = w["popup_window"]
+        self.popup_deadline_picker_button = w["popup_deadline_picker_button"]
+        self.popup_deadline_value_hint = w["popup_deadline_value_hint"]
+        self.popup_handoff_button_wrap = w["popup_handoff_button_wrap"]
+        self.popup_note_box = w["popup_note_box"]
+        
+        # Render handoff buttons inside popup
+        self.popup_handoff_buttons = self.layout.render_handoff_buttons(
+            self.popup_handoff_button_wrap,
+            [o["display_name"] for o in self.handoff_options],
+            [self.selected_handoff_to],
+            self.select_popup_handoff,
+            self.colors,
+        )
+        
+        # Set default values
+        self.pending_deadline_date = ""
+        self.pending_deadline_time = self.deadline_time_slots[0] if self.deadline_time_slots else ""
+        self.update_popup_deadline_button_text()
+        
+    def close_training_completion_popup(self):
+        if self.training_popup:
+            try:
+                self.training_popup.destroy()
+            except:
+                pass
+            self.training_popup = None
+            
+    def select_popup_handoff(self, target):
+        self.selected_handoff_to = target
+        for name, button in self.popup_handoff_buttons.items():
+            if name == target:
+                button.configure(font=("Segoe UI", 11, "bold"), fg_color=self.BTN_ACTIVE)
+            else:
+                button.configure(font=("Segoe UI", 11), fg_color=self.BTN_INACTIVE)
+                
+    def toggle_popup_deadline(self):
+        self.deadline_target_button = self.popup_deadline_picker_button
+        self.deadline_target_hint = self.popup_deadline_value_hint
+        self.toggle_deadline_popup()
+        if self.deadline_popup_frame:
+            self.deadline_popup_frame.lift()
+            # Try to lift above training popup
+            if self.training_popup:
+                self.deadline_popup_frame.master.lift()
+                
+    def update_popup_deadline_button_text(self):
+        if hasattr(self, "popup_deadline_picker_button") and self.popup_deadline_picker_button.winfo_exists():
+            if self.pending_deadline_date and self.pending_deadline_time:
+                self.popup_deadline_picker_button.configure(text=f"{self.pending_deadline_date} {self.pending_deadline_time}")
+            else:
+                self.popup_deadline_picker_button.configure(text="Choose Date & Time")
+            if hasattr(self, "popup_deadline_value_hint") and self.popup_deadline_value_hint.winfo_exists():
+                self.popup_deadline_value_hint.configure(text="")
+
+    def confirm_training_save(self, action_type):
+        if action_type == "complete":
+            stage_key = self.logic.get_training_stage_key(self.active_task.get("status"))
+            is_second = stage_key == "second"
+            payload, error_message = self.collect_setup_training_payload(
+                complete_first=not is_second,
+                complete_second=is_second,
+                from_popup=True
+            )
+        else:
+            payload, error_message = self.collect_setup_training_payload(complete_first=False, from_popup=True)
+            
         if error_message:
-            messagebox.showwarning(self.get_task_module_label(), error_message)
+            messagebox.showwarning("Training Save", error_message)
             return
 
         if not self._start_follow_action("update"):
@@ -1695,6 +2178,7 @@ class ProcessPage(ctk.CTkFrame):
             actor_display_name=self.current_display_name,
             action_by=self.current_username,
         )
+        self.close_training_completion_popup()
 
     def on_follow_wrap_configure(self, _event=None):
         self.ui_handler.on_follow_wrap_configure(_event)
@@ -1860,9 +2344,166 @@ class ProcessPage(ctk.CTkFrame):
             action_by=self.current_username,
         )
         self.follow_tasks = self.store.get_all()
-        self.filtered_follow_tasks = self.store.filter_local(self.search_entry.get().strip())
+        self.filtered_follow_tasks = self.get_section_filtered_tasks(self.search_entry.get().strip())
         self.redraw_follow_canvas()
         self.load_task_detail(temp_id)
+
+    def on_start_training(self):
+        if not self.active_task:
+            return
+        self.is_training_started = True
+        # Restore previously completed tabs from DB
+        saved = self.active_task.get("training_completed_tabs", [])
+        self.completed_tabs = set(saved) if isinstance(saved, list) else set()
+        # Lazy-load checklist now
+        self.render_setup_training_sections(self.active_task.get("training_form") or [])
+        self.update_follow_form_mode()
+        self._refresh_tab_lock_state()
+        self.after_idle(self.update_detail_scrollregion)
+
+    # ----- Sequential Tab Logic -----
+    TAB_ORDER = ["I. SET UP", "II. H\u01af\u1edaNG D\u1eaaN", "III. THEO D\u00d5I"]
+
+    def _refresh_tab_lock_state(self):
+        self._update_complete_button_state()
+
+    def on_training_tab_change(self, value):
+        """Guard sequential access: tab N+1 only accessible if tab N is done."""
+        completed = getattr(self, "completed_tabs", set())
+        if value not in self.TAB_ORDER:
+            self._switch_training_section(value)
+            return
+        idx = self.TAB_ORDER.index(value)
+        if idx > 0:
+            prev_tab = self.TAB_ORDER[idx - 1]
+            if prev_tab not in completed:
+                messagebox.showwarning(
+                    "Tab Locked",
+                    f"Ban can hoan thanh muc '{prev_tab}' truoc khi chuyen sang '{value}'.",
+                )
+                last_completed_idx = -1
+                for i, t in enumerate(self.TAB_ORDER):
+                    if t in completed:
+                        last_completed_idx = i
+                revert_to = self.TAB_ORDER[min(last_completed_idx + 1, len(self.TAB_ORDER) - 1)]
+                if hasattr(self, "checklist_tabs"):
+                    self.checklist_tabs.set(revert_to)
+                return
+        self._switch_training_section(value)
+
+    def _switch_training_section(self, value):
+        if not hasattr(self, "training_sections_wrap"):
+            return
+        tab_map = {"I. SET UP": 0, "II. H\u01af\u1edaNG D\u1eaaN": 1, "III. THEO D\u00d5I": 2}
+        target_idx = tab_map.get(value, 0)
+        for i, child in enumerate(self.training_sections_wrap.winfo_children()):
+            try:
+                if i == target_idx:
+                    child.grid()
+                else:
+                    child.grid_remove()
+            except Exception:
+                pass
+
+    def on_complete_current_tab(self):
+        """Mark current tab as done, unlock next, auto-save."""
+        if not hasattr(self, "checklist_tabs"):
+            return
+        current_tab = self.checklist_tabs.get()
+        if current_tab not in self.TAB_ORDER:
+            return
+        current_idx = self.TAB_ORDER.index(current_tab)
+        if not self._all_items_checked_in_section(current_idx):
+            messagebox.showwarning(
+                "Checklist chua hoan thanh",
+                f"Vui long tich day du tat ca cac muc trong '{current_tab}' truoc khi hoan thanh."
+            )
+            return
+        completed = getattr(self, "completed_tabs", set())
+        completed.add(current_tab)
+        self.completed_tabs = completed
+        if current_idx + 1 < len(self.TAB_ORDER):
+            next_tab = self.TAB_ORDER[current_idx + 1]
+            self.checklist_tabs.set(next_tab)
+            self._switch_training_section(next_tab)
+        self._update_complete_button_state()
+        self._autosave_completed_tabs()
+
+    def _all_items_checked_in_section(self, section_idx):
+        if not hasattr(self, "training_sections_wrap"):
+            return True
+        children = self.training_sections_wrap.winfo_children()
+        if section_idx >= len(children):
+            return True
+        section_frame = children[section_idx]
+        for widget in section_frame.winfo_descendants():
+            if hasattr(widget, "_check_state"):
+                try:
+                    if widget.get() == 0:
+                        return False
+                except Exception:
+                    pass
+        return True
+
+    def _update_complete_button_state(self):
+        if not hasattr(self, "follow_complete_training_button"):
+            return
+        completed = getattr(self, "completed_tabs", set())
+        stage_val = str((self.active_task or {}).get("status", "")).strip().upper()
+        if stage_val == "2ND TRAINING":
+            can_complete = getattr(self, "is_training_started", False)
+        else:
+            can_complete = all(t in completed for t in self.TAB_ORDER)
+        if can_complete:
+            self.follow_complete_training_button.configure(
+                state="normal", fg_color=self.BTN_ACTIVE, hover_color=self.BTN_ACTIVE_HOVER,
+            )
+        else:
+            self.follow_complete_training_button.configure(
+                state="disabled", fg_color="#b8aba0", hover_color="#b8aba0",
+            )
+
+    def _autosave_completed_tabs(self):
+        if not self.active_task or not self.active_task.get("task_id"):
+            return
+        payload, err = self.collect_setup_training_payload(
+            complete_first=False, complete_second=False, from_popup=False
+        )
+        if err or not payload:
+            return
+        if not self._start_follow_action("update"):
+            return
+        self.store.update_item(
+            self.active_task["task_id"],
+            payload,
+            actor_display_name=self.current_display_name,
+            action_by=self.current_username,
+        )
+        self._end_follow_action("update")
+
+    # ----- Done Task View Mode -----
+
+    def on_view_training_info(self):
+        """Show read-only training checklist for DONE tasks."""
+        if not self.active_task:
+            return
+        self.is_training_started = True
+        saved = self.active_task.get("training_completed_tabs", [])
+        self.completed_tabs = set(saved) if isinstance(saved, list) else set()
+        self.render_setup_training_sections(self.active_task.get("training_form") or [])
+        self.update_follow_form_mode()
+        self._set_sections_read_only()
+        self.after_idle(self.update_detail_scrollregion)
+
+    def _set_sections_read_only(self):
+        if not hasattr(self, "training_sections_wrap"):
+            return
+        for child in self.training_sections_wrap.winfo_descendants():
+            try:
+                child.configure(state="disabled")
+            except Exception:
+                pass
+
 
     def on_follow_update(self):
         if not self.active_task or not self.active_task.get("task_id"):
@@ -1870,9 +2511,11 @@ class ProcessPage(ctk.CTkFrame):
             return
 
         if self.is_setup_training_section():
-            payload, error_message = self.collect_setup_training_payload(complete_first=False)
+            self.open_training_completion_popup(action_type="update")
+            return
         else:
             payload, error_message = self.collect_follow_form_payload()
+            
         if error_message:
             messagebox.showwarning(self.get_task_module_label(), error_message)
             return

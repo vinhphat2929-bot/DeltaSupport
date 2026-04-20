@@ -289,6 +289,15 @@ def ensure_task_follow_training_columns(cursor):
         END
         """
     )
+    cursor.execute(
+        """
+        IF COL_LENGTH('dbo.TaskFollow', 'TrainingCompletedTabsJson') IS NULL
+        BEGIN
+            ALTER TABLE dbo.TaskFollow
+            ADD TrainingCompletedTabsJson NVARCHAR(MAX) NULL
+        END
+        """
+    )
 
 
 def serialize_training_form_json(value):
@@ -524,6 +533,7 @@ def build_task_response(row, history_items=None, recipient_items=None):
         ),
         "training_started_by_username": normalize_text(getattr(row, "TrainingStartedByUsername", "")),
         "training_started_by_display_name": normalize_text(getattr(row, "TrainingStartedByDisplayName", "")),
+        "training_completed_tabs": parse_training_form_json(getattr(row, "TrainingCompletedTabsJson", "")) or [],
         "history": history_items or [],
     }
 
@@ -1731,6 +1741,7 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
             return {"success": False, "message": "Handoff target is required."}
 
         training_form_json = serialize_training_form_json(getattr(data, "training_form", []))
+        training_completed_tabs_json = serialize_training_form_json(getattr(data, "training_completed_tabs", []))
         previous_training_started_at = getattr(previous_row, "TrainingStartedAt", None) if previous_row else None
         previous_training_started_by_username = (
             normalize_username(getattr(previous_row, "TrainingStartedByUsername", "")) if previous_row else ""
@@ -1775,6 +1786,7 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
                 TrainingStartedAt = ?,
                 TrainingStartedByUsername = ?,
                 TrainingStartedByDisplayName = ?,
+                TrainingCompletedTabsJson = ?,
                 UpdatedAt = GETDATE()
             WHERE TaskID = ?
             """,
@@ -1799,6 +1811,7 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
                 training_started_at,
                 training_started_by_username,
                 training_started_by_display_name,
+                training_completed_tabs_json or None,
                 task_id,
             ),
         )

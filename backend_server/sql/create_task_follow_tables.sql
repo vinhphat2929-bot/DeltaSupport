@@ -54,6 +54,13 @@ BEGIN
 END
 GO
 
+IF COL_LENGTH('dbo.TaskFollow', 'TrainingCompletedTabsJson') IS NULL
+BEGIN
+    ALTER TABLE dbo.TaskFollow
+    ADD TrainingCompletedTabsJson NVARCHAR(MAX) NULL
+END
+GO
+
 IF OBJECT_ID('dbo.TaskFollowLog', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.TaskFollowLog (

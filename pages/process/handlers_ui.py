@@ -12,7 +12,7 @@ class ProcessUIHandler:
 
     def apply_follow_search(self):
         query = self.page.search_entry.get().strip().lower()
-        self.page.filtered_follow_tasks = self.page.store.filter_local(query)
+        self.page.filtered_follow_tasks = self.page.get_section_filtered_tasks(query)
         self.page.redraw_follow_canvas()
 
         if not self.page.filtered_follow_tasks:
@@ -249,6 +249,6 @@ class ProcessUIHandler:
             self.page.handoff_button_wrap,
             display_names,
             self.page.selected_handoff_targets,
-            self.page.select_handoff,
+            self.page.toggle_handoff,
             colors
         )

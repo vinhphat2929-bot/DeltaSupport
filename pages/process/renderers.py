@@ -192,6 +192,23 @@ class ProcessRenderer:
                     canvas.create_rectangle(start_x, y, end_x, y + height, fill="#ffffff", outline="#000000")
                 canvas.create_text((col_positions["step"] + col_positions["list"]) / 2, y + 8, text=row.get("step", ""), fill="#1d1d1d", font=("Segoe UI", 10, "bold"), anchor="n")
                 canvas.create_text(col_positions["list"] + 8, y + 6, text=row.get("label", ""), fill="#1d1d1d", font=("Segoe UI", 10), anchor="nw", justify="left", width=list_w - 16)
+
+                # Vẽ nút DONE/X toggle trong ô result
+                result_val = str(row.get("result", "")).strip().upper()
+                btn_x1 = col_positions["result"] + 8
+                btn_y1 = y + (height / 2) - 13
+                btn_x2 = col_positions["note"] - 8
+                btn_y2 = y + (height / 2) + 13
+                if result_val == "DONE":
+                    btn_fill, btn_text_color, btn_label = "#ef4444", "#ffffff", "DONE"
+                elif result_val == "X":
+                    btn_fill, btn_text_color, btn_label = "#f59e0b", "#ffffff", "X"
+                else:
+                    btn_fill, btn_text_color, btn_label = "#f3ede4", "#8d7867", "—"
+                self.draw_round_rect(canvas, btn_x1, btn_y1, btn_x2, btn_y2, 6, btn_fill, btn_fill)
+                canvas.create_text((btn_x1 + btn_x2) / 2, (btn_y1 + btn_y2) / 2, text=btn_label, fill=btn_text_color, font=("Segoe UI", 10, "bold"))
+                row_data["result_hit"] = (btn_x1, btn_y1, btn_x2, btn_y2)
+
             y += height
         canvas.configure(scrollregion=(0, 0, col_positions["right"], y + 4))
         return y + 4, layout

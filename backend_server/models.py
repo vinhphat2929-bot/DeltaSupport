@@ -156,6 +156,7 @@ class TaskFollowUpsertRequest(BaseModel):
     training_started_at: str = ""
     training_started_by_username: str = ""
     training_started_by_display_name: str = ""
+    training_completed_tabs: List[str] = []
 
 
 class TaskFollowNotificationReadRequest(BaseModel):

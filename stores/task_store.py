@@ -318,6 +318,7 @@ class TaskStore(BaseStore):
                     "training_started_by_display_name",
                     source.get("training_started_by_display_name", ""),
                 ),
+                "training_completed_tabs": deepcopy(payload.get("training_completed_tabs", source.get("training_completed_tabs", []))),
                 "updated_at": datetime.now().strftime("%d-%m-%Y %I:%M %p"),
                 "history": source.get("history", []),
                 "is_optimistic": True,

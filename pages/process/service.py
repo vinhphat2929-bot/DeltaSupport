@@ -104,19 +104,16 @@ class ProcessService:
         }
         return payload, ""
 
-    def build_training_payload(self, active_task, form_data, complete_first=False):
-        """
-        Refactored payload collection logic from collect_setup_training_payload
-        """
-        if not active_task or not active_task.get("task_id"):
-            return None, "Hay chon task Setup / Training can xu ly."
+    def build_training_payload(self, active_task, form_data, complete_first=False, complete_second=False):
+        if not active_task:
+            return None, "Hay chon task can update."
 
-        selected_handoff_names = form_data.get("handoff_targets", [])
+        # Re-construct handoff_to
+        handoff_targets = form_data.get("handoff_targets", [])
         handoff_options = form_data.get("handoff_options", [])
-        
         matched_options = []
-        for name in selected_handoff_names:
-            opt = self.get_handoff_option_by_name(name, handoff_options)
+        for name in handoff_targets:
+            opt = next((o for o in handoff_options if str(o.get("display_name", "")).strip() == name), None)
             if opt:
                 matched_options.append(opt)
         
@@ -156,14 +153,29 @@ class ProcessService:
             "handoff_to_display_name": handoff_to_display_name,
             "handoff_to_usernames": handoff_to_usernames,
             "handoff_to_display_names": handoff_to_display_names,
-            "status": "2ND TRAINING" if complete_first else active_task.get("status", "SET UP & TRAINING"),
-            "deadline_date": active_task.get("deadline_date", ""),
-            "deadline_time": active_task.get("deadline_time", ""),
-            "deadline_period": active_task.get("deadline_period", "AM"),
             "note": form_data.get("note", "").strip(),
             "training_form": form_data.get("training_form", []),
+            "training_completed_tabs": form_data.get("training_completed_tabs", []),
             "training_started_at": started_at_text,
             "training_started_by_username": started_by_username,
             "training_started_by_display_name": started_by_display_name,
         }
+
+        if complete_first:
+            payload["status"] = "2ND TRAINING"
+        elif complete_second:
+            payload["status"] = "DONE"
+        else:
+            payload["status"] = active_task.get("status", "SET UP & TRAINING")
+
+        deadline_date = form_data.get("deadline_date")
+        if deadline_date:
+            payload["deadline_date"] = deadline_date
+            payload["deadline_time"] = form_data.get("deadline_time", "")
+            payload["deadline_period"] = form_data.get("deadline_period", "AM")
+        else:
+            payload["deadline_date"] = active_task.get("deadline_date", "")
+            payload["deadline_time"] = active_task.get("deadline_time", "")
+            payload["deadline_period"] = active_task.get("deadline_period", "AM")
+
         return payload, ""
