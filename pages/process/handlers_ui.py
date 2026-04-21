@@ -215,7 +215,9 @@ class ProcessUIHandler:
             self.page.active_scroll_target = None
 
     def on_follow_wrap_configure(self, event):
-        self.page.refresh_follow_layout()
+        event_width = getattr(event, "width", None)
+        event_height = getattr(event, "height", None)
+        self.page.schedule_follow_layout_refresh(width=event_width, height=event_height)
 
     def open_setup_training_from_follow(self):
         if not self.page.active_task or not self.page.active_task.get("task_id"):

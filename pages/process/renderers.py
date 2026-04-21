@@ -1,5 +1,6 @@
 import tkinter as tk
 import customtkinter as ctk
+import math
 from datetime import datetime, timedelta
 
 class ProcessRenderer:
@@ -38,7 +39,7 @@ class ProcessRenderer:
         canvas.delete("all")
         header_canvas.delete("all")
         hits = []
-        row_height = 44
+        row_height = 40
         row_gap = 6
         content_padding = 46
         header_height = 62
@@ -46,15 +47,18 @@ class ProcessRenderer:
 
         canvas_width = max(canvas.winfo_width(), 640)
         if is_training:
-            header_ratios = [("Merchant", 0.48), ("Next", 0.24), ("Training", 0.28)]
-            min_widths = {"Merchant": 130, "Next": 90, "Training": 120}
+            row_height = 34
+            row_gap = 5
+            header_height = 40
+            header_ratios = [("Merchant", 0.58), ("Next", 0.22), ("Stage", 0.20)]
+            min_widths = {"Merchant": 120, "Next": 76, "Stage": 92}
         else:
             header_ratios = [
                 ("Merchant", 0.25), ("Phone", 0.13), ("Problem", 0.22),
-                ("Handoff To", 0.12), ("Deadline", 0.14), ("Status", 0.14)
+                ("Assignee", 0.12), ("Due Day", 0.14), ("Status", 0.14)
             ]
-            min_widths = {"Merchant": 155, "Phone": 105, "Problem": 145, "Handoff To": 100, "Deadline": 120, "Status": 145}
-        
+            min_widths = {"Merchant": 155, "Phone": 105, "Problem": 145, "Assignee": 100, "Due Day": 120, "Status": 145}
+
         x = 14
         y = 4
         right_padding = 18
@@ -68,7 +72,13 @@ class ProcessRenderer:
 
         header_x = x
         for name, w in resolved_headers:
-            header_canvas.create_text(header_x + (w / 2), header_height / 2, text=name, fill=canvas_header, font=("Segoe UI", 11, "bold"))
+            header_canvas.create_text(
+                header_x + (w / 2),
+                header_height / 2,
+                text=name,
+                fill=canvas_header,
+                font=("Segoe UI", 10, "bold" if is_training else "bold"),
+            )
             header_x += w
 
         active_task_id = active_task.get("task_id") if active_task else None
@@ -107,19 +117,30 @@ class ProcessRenderer:
 
             row_x = x
             if is_training:
+                card_fill = "#f6ede0" if idx % 2 == 0 else "#efe3d2"
+                card_border = "#c58b42" if is_active else "#d6b485"
+                self.draw_round_rect(canvas, x, y, x + used_width, y + row_height, 10, card_fill, card_border, width=2 if is_active else 1)
+                canvas.create_rectangle(x + 8, y + 7, x + 11, y + row_height - 7, fill="#8b5e34", outline="")
                 merchant_label = str(item.get("merchant_name", "")).strip() or str(item.get("merchant_raw", "")).strip()
                 zip_code = str(item.get("zip_code", "")).strip()
-                if zip_code: merchant_label = f"{merchant_label}  {zip_code}"
-                canvas.create_text(row_x + 16, y + (row_height / 2), text=merchant_label, fill=text_color, font=("Segoe UI", 11, "bold"), anchor="w")
+                if zip_code:
+                    merchant_label = f"{merchant_label} {zip_code}"
+                if len(merchant_label) > 26:
+                    merchant_label = merchant_label[:23].rstrip() + "..."
+                canvas.create_text(row_x + 18, y + (row_height / 2), text=merchant_label, fill="#1f2937", font=("Segoe UI", 10, "bold"), anchor="w")
                 row_x += resolved_headers[0][1]
                 deadline_text = str(item.get("deadline", "")).strip()
-                canvas.create_text(row_x + 16, y + (row_height / 2), text=deadline_text, fill=text_color, font=("Segoe UI", 10), anchor="w")
+                if len(deadline_text) > 18:
+                    deadline_text = deadline_text[:18]
+                canvas.create_text(row_x + 10, y + (row_height / 2), text=deadline_text, fill="#6b4f35", font=("Segoe UI", 9), anchor="w")
                 row_x += resolved_headers[1][1]
                 is_second = str(item.get("status", "")).strip().upper() == "2ND TRAINING"
-                stage_text = "2nd Training" if is_second else "1st Setup & Training"
-                stage_color = "#0ea5a3" if is_second else "#9333ea"
-                self.draw_round_rect(canvas, row_x + 12, y + 10, row_x + 152, y + row_height - 10, 8, stage_color, stage_color)
-                canvas.create_text(row_x + 82, y + (row_height / 2), text=stage_text, fill="#ffffff", font=("Segoe UI", 10, "bold"))
+                stage_text = "2nd" if is_second else "1st"
+                stage_color = "#0f766e" if is_second else "#7c3aed"
+                pill_x1 = row_x + 6
+                pill_x2 = row_x + resolved_headers[2][1] - 8
+                self.draw_round_rect(canvas, pill_x1, y + 7, pill_x2, y + row_height - 7, 7, stage_color, stage_color)
+                canvas.create_text((pill_x1 + pill_x2) / 2, y + (row_height / 2), text=stage_text, fill="#ffffff", font=("Segoe UI", 9, "bold"))
             else:
                 for h_idx, (h_name, h_w) in enumerate(resolved_headers):
                     val = ""
@@ -129,8 +150,8 @@ class ProcessRenderer:
                         if zip_code: val = f"{val}  {zip_code}"
                     elif h_name == "Phone": val = str(item.get("phone", "")).strip()
                     elif h_name == "Problem": val = str(item.get("problem", "")).strip()
-                    elif h_name == "Handoff To": val = str(item.get("handoff_to", "")).strip()
-                    elif h_name == "Deadline": val = str(item.get("deadline", "")).strip()
+                    elif h_name == "Assignee": val = str(item.get("handoff_to", "")).strip()
+                    elif h_name == "Due Day": val = str(item.get("deadline", "")).strip()
                     elif h_name == "Status":
                         self.draw_round_rect(canvas, row_x + 12, y + 10, row_x + h_w - 12, y + row_height - 10, 8, meta["bg"], meta["bg"])
                         canvas.create_text(row_x + (h_w / 2), y + (row_height / 2), text=val or str(item.get("status", "")).strip(), fill=meta["text"], font=("Segoe UI", 10, "bold"))
@@ -144,16 +165,23 @@ class ProcessRenderer:
         header_canvas.configure(scrollregion=(0, 0, x + used_width + right_padding, header_height))
         return y + content_padding, hits
 
-    def estimate_training_row_height(self, row):
+    def estimate_training_row_height(self, row, list_width=280):
         kind = row.get("kind")
         if kind == "banner":
             subtitle = str(row.get("subtitle", "")).strip()
-            return 42 + (22 * max(0, subtitle.count("\n") + (1 if subtitle else 0)))
+            max_chars = max(30, int((max(120, list_width) - 24) / 7))
+            subtitle_lines = 0
+            for part in subtitle.splitlines() or [""]:
+                subtitle_lines += max(1, int(math.ceil(len(part) / max_chars)))
+            return 42 + (18 * max(0, subtitle_lines))
         if kind == "columns": return 30
         if kind == "group": return 34
         label = str(row.get("label", "")).strip()
-        line_count = max(1, label.count("\n") + 1)
-        return max(34, 12 + (line_count * 18))
+        max_chars = max(28, int((max(120, list_width) - 24) / 7))
+        line_count = 0
+        for part in label.splitlines() or [""]:
+            line_count += max(1, int(math.ceil(len(part) / max_chars)))
+        return max(40, 14 + (line_count * 18))
 
     def redraw_training_canvas(self, canvas, flat_rows, training_note_entries, training_note_values, canvas_width, banner_bg, subheader_bg, group_bg):
         if canvas is None: return 0, []
@@ -169,7 +197,7 @@ class ProcessRenderer:
         col_positions = {"step": x, "list": x + step_w, "result": x + step_w + list_w, "note": x + step_w + list_w + result_w, "right": x + step_w + list_w + result_w + note_w}
 
         for row in flat_rows:
-            height = self.estimate_training_row_height(row)
+            height = self.estimate_training_row_height(row, list_width=list_w)
             row_data = row.copy()
             row_data["height"], row_data["y"] = height, y
             layout.append(row_data)

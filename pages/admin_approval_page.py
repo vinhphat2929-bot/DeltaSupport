@@ -4,7 +4,7 @@ import customtkinter as ctk
 from tkinter import messagebox
 import requests
 
-API_BASE_URL = "https://underline-steersman-crepe.ngrok-free.dev"
+from services.app_config import API_BASE_URL
 
 # ===== THEME =====
 BG_MAIN = "#1a0f0b"

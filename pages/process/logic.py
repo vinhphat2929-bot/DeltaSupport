@@ -88,7 +88,7 @@ SECOND_TRAINING_TEMPLATE = [
 STATUS_META = {
     "FOLLOW": {"bg": "#2d6cdf", "text": "#ffffff"},
     "FOLLOW REQUEST": {"bg": "#2563eb", "text": "#ffffff"},
-    "CHECK TRACKING NUMBER": {"bg": "#0f766e", "text": "#ffffff"},
+    "SHIP OUT": {"bg": "#0f766e", "text": "#ffffff"},
     "SET UP & TRAINING": {"bg": "#9333ea", "text": "#ffffff"},
     "2ND TRAINING": {"bg": "#0ea5a3", "text": "#ffffff"},
     "MISS TIP / CHARGE BACK": {"bg": "#f59e0b", "text": "#2a221d"},

@@ -44,6 +44,7 @@ class ProcessService:
         merchant_raw_text = form_data.get("merchant_name", "").strip()
         status = form_data.get("status")
         note = form_data.get("note", "").strip()
+        tracking_number = form_data.get("tracking_number", "").strip().upper()
         deadline_date = form_data.get("deadline_date")
         deadline_time = form_data.get("deadline_time")
         deadline_period = form_data.get("deadline_period")
@@ -56,6 +57,8 @@ class ProcessService:
             return None, "Ngay hen khong duoc de trong."
         if not deadline_time or deadline_period not in {"AM", "PM"}:
             return None, "Hay chon day du ngay gio hen."
+        if status == "SHIP OUT" and not tracking_number:
+            return None, "Status SHIP OUT bat buoc phai nhap tracking number."
         if status == "DONE" and not note:
             return None, "Status DONE bat buoc phai nhap note."
 
@@ -90,6 +93,7 @@ class ProcessService:
             "action_by_username": self.username,
             "merchant_raw_text": merchant_raw_text,
             "phone": form_data.get("phone", "").strip(),
+            "tracking_number": tracking_number,
             "problem_summary": form_data.get("problem", "").strip(),
             "handoff_to_type": handoff_to_type,
             "handoff_to_username": handoff_to_username,
@@ -147,6 +151,7 @@ class ProcessService:
             "action_by_username": self.username,
             "merchant_raw_text": active_task.get("merchant_raw", ""),
             "phone": active_task.get("phone", ""),
+            "tracking_number": active_task.get("tracking_number", ""),
             "problem_summary": active_task.get("problem", ""),
             "handoff_to_type": handoff_to_type,
             "handoff_to_username": handoff_to_username,

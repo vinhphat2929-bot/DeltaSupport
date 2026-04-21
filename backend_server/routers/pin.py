@@ -4,16 +4,121 @@ from fastapi import APIRouter
 
 from database import get_connection
 from models import (
-    SetPinRequest,
-    VerifyPinRequest,
     ChangePinRequest,
     ForgotPinOTPRequest,
     ResetPinWithOTPRequest,
+    SetPinRequest,
+    VerifyPinRequest,
 )
-from services.audit_service import write_user_log, is_valid_pin
+from services.audit_service import is_valid_pin, write_user_log
 from services.email_service import send_pin_reset_otp_email
 
 router = APIRouter()
+
+
+def ensure_user_pin_columns(cursor):
+    schema_changed = False
+
+    cursor.execute(
+        """
+        SELECT
+            CASE WHEN COL_LENGTH('dbo.Users', 'PinCode') IS NULL THEN 1 ELSE 0 END,
+            CASE WHEN COL_LENGTH('dbo.Users', 'PinUpdatedAt') IS NULL THEN 1 ELSE 0 END,
+            CASE WHEN COL_LENGTH('dbo.Users', 'PinFailedCount') IS NULL THEN 1 ELSE 0 END,
+            CASE WHEN COL_LENGTH('dbo.Users', 'PinLockedUntil') IS NULL THEN 1 ELSE 0 END
+        """
+    )
+    row = cursor.fetchone()
+    if row:
+        schema_changed = any(int(value or 0) == 1 for value in row)
+
+    cursor.execute(
+        """
+        IF COL_LENGTH('dbo.Users', 'PinCode') IS NULL
+        BEGIN
+            ALTER TABLE dbo.Users
+            ADD PinCode NVARCHAR(10) NULL
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF COL_LENGTH('dbo.Users', 'PinUpdatedAt') IS NULL
+        BEGIN
+            ALTER TABLE dbo.Users
+            ADD PinUpdatedAt DATETIME NULL
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF COL_LENGTH('dbo.Users', 'PinFailedCount') IS NULL
+        BEGIN
+            ALTER TABLE dbo.Users
+            ADD PinFailedCount INT NOT NULL
+                CONSTRAINT DF_Users_PinFailedCount DEFAULT 0
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF COL_LENGTH('dbo.Users', 'PinLockedUntil') IS NULL
+        BEGIN
+            ALTER TABLE dbo.Users
+            ADD PinLockedUntil DATETIME NULL
+        END
+        """
+    )
+
+    if schema_changed:
+        cursor.connection.commit()
+
+    return schema_changed
+
+
+def ensure_user_otp_table(cursor):
+    cursor.execute(
+        """
+        IF OBJECT_ID('dbo.UserOTP', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.UserOTP (
+                OTPID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                Email NVARCHAR(255) NOT NULL,
+                OTPCode NVARCHAR(10) NOT NULL,
+                ExpiredAt DATETIME NOT NULL,
+                IsUsed BIT NOT NULL DEFAULT 0,
+                CreatedAt DATETIME NOT NULL DEFAULT GETDATE()
+            )
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = 'IX_UserOTP_Email_IsUsed_ExpiredAt'
+              AND object_id = OBJECT_ID('dbo.UserOTP')
+        )
+        BEGIN
+            CREATE INDEX IX_UserOTP_Email_IsUsed_ExpiredAt
+            ON dbo.UserOTP(Email, IsUsed, ExpiredAt DESC)
+        END
+        """
+    )
+
+
+def bootstrap_pin_schema():
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        ensure_user_pin_columns(cursor)
+        ensure_user_otp_table(cursor)
+        conn.commit()
+    finally:
+        if conn:
+            conn.close()
 
 
 @router.get("/pin-status/{username}")
@@ -22,17 +127,20 @@ def get_pin_status(username: str):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        ensure_user_pin_columns(cursor)
 
-        query = """
-        SELECT Username, PinCode, PinFailedCount, PinLockedUntil
-        FROM dbo.Users
-        WHERE Username = ?
-        """
-        cursor.execute(query, (username.strip(),))
+        cursor.execute(
+            """
+            SELECT Username, PinCode, PinFailedCount, PinLockedUntil
+            FROM dbo.Users
+            WHERE Username = ?
+            """,
+            (username.strip(),),
+        )
         row = cursor.fetchone()
 
         if not row:
-            return {"success": False, "message": "Không tìm thấy user"}
+            return {"success": False, "message": "User not found"}
 
         return {
             "success": True,
@@ -59,22 +167,23 @@ def set_pin(data: SetPinRequest):
         action_by = data.action_by.strip()
 
         if not is_valid_pin(pin_code):
-            return {"success": False, "message": "PIN phải gồm đúng 4 chữ số"}
+            return {"success": False, "message": "PIN must be exactly 4 digits"}
 
         conn = get_connection()
         cursor = conn.cursor()
+        ensure_user_pin_columns(cursor)
 
         cursor.execute(
             "SELECT PinCode FROM dbo.Users WHERE Username = ?",
-            (username,)
+            (username,),
         )
         row = cursor.fetchone()
 
         if not row:
-            return {"success": False, "message": "Không tìm thấy user"}
+            return {"success": False, "message": "User not found"}
 
         if row[0]:
-            return {"success": False, "message": "User đã có PIN"}
+            return {"success": False, "message": "User already has a PIN"}
 
         cursor.execute(
             """
@@ -82,7 +191,7 @@ def set_pin(data: SetPinRequest):
             SET PinCode = ?, PinUpdatedAt = GETDATE(), PinFailedCount = 0, PinLockedUntil = NULL
             WHERE Username = ?
             """,
-            (pin_code, username)
+            (pin_code, username),
         )
 
         write_user_log(
@@ -96,7 +205,7 @@ def set_pin(data: SetPinRequest):
         )
 
         conn.commit()
-        return {"success": True, "message": "Tạo PIN thành công"}
+        return {"success": True, "message": "PIN created successfully"}
 
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -114,24 +223,25 @@ def verify_pin(data: VerifyPinRequest):
         pin_code = data.pin_code.strip()
 
         if not is_valid_pin(pin_code):
-            return {"success": False, "message": "PIN phải gồm đúng 4 chữ số"}
+            return {"success": False, "message": "PIN must be exactly 4 digits"}
 
         conn = get_connection()
         cursor = conn.cursor()
+        ensure_user_pin_columns(cursor)
 
         cursor.execute(
             "SELECT PinCode FROM dbo.Users WHERE Username = ?",
-            (username,)
+            (username,),
         )
         row = cursor.fetchone()
 
         if not row:
-            return {"success": False, "message": "Không tìm thấy user"}
+            return {"success": False, "message": "User not found"}
 
-        if str(row[0]) == pin_code:
-            return {"success": True, "message": "PIN đúng"}
+        if str(row[0] or "") == pin_code:
+            return {"success": True, "message": "PIN is correct"}
 
-        return {"success": False, "message": "PIN sai"}
+        return {"success": False, "message": "PIN is incorrect"}
 
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -148,36 +258,49 @@ def change_pin(data: ChangePinRequest):
         username = data.username.strip()
         old_pin = data.old_pin.strip()
         new_pin = data.new_pin.strip()
+        action_by = data.action_by.strip()
 
         if not is_valid_pin(new_pin):
-            return {"success": False, "message": "PIN mới không hợp lệ"}
+            return {"success": False, "message": "New PIN is invalid"}
 
         conn = get_connection()
         cursor = conn.cursor()
+        ensure_user_pin_columns(cursor)
 
         cursor.execute(
             "SELECT PinCode FROM dbo.Users WHERE Username = ?",
-            (username,)
+            (username,),
         )
         row = cursor.fetchone()
 
         if not row:
-            return {"success": False, "message": "Không tìm thấy user"}
+            return {"success": False, "message": "User not found"}
 
-        if str(row[0]) != old_pin:
-            return {"success": False, "message": "PIN cũ không đúng"}
+        current_pin = str(row[0] or "")
+        if current_pin != old_pin:
+            return {"success": False, "message": "Current PIN is incorrect"}
 
         cursor.execute(
             """
             UPDATE dbo.Users
-            SET PinCode = ?
+            SET PinCode = ?, PinUpdatedAt = GETDATE(), PinFailedCount = 0, PinLockedUntil = NULL
             WHERE Username = ?
             """,
-            (new_pin, username)
+            (new_pin, username),
+        )
+
+        write_user_log(
+            cursor,
+            username=username,
+            action_type="CHANGE_PIN",
+            action_by=action_by,
+            field_name="PinCode",
+            old_value="****" if current_pin else None,
+            new_value="****",
         )
 
         conn.commit()
-        return {"success": True, "message": "Đổi PIN thành công"}
+        return {"success": True, "message": "PIN changed successfully"}
 
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -195,6 +318,7 @@ def send_forgot_pin_otp(data: ForgotPinOTPRequest):
 
         conn = get_connection()
         cursor = conn.cursor()
+        ensure_user_otp_table(cursor)
 
         cursor.execute(
             """
@@ -253,6 +377,8 @@ def reset_pin_with_otp(data: ResetPinWithOTPRequest):
 
         conn = get_connection()
         cursor = conn.cursor()
+        ensure_user_pin_columns(cursor)
+        ensure_user_otp_table(cursor)
 
         cursor.execute(
             """

@@ -2,13 +2,13 @@ from copy import deepcopy
 
 import requests
 
-from services.auth_service import API_BASE_URL
+from services.app_config import API_BASE_URL
 
 
 TASK_STATUSES = [
     "FOLLOW",
     "FOLLOW REQUEST",
-    "CHECK TRACKING NUMBER",
+    "SHIP OUT",
     "SET UP & TRAINING",
     "2ND TRAINING",
     "MISS TIP / CHARGE BACK",
@@ -21,6 +21,13 @@ def _normalize_text(value):
     return str(value or "").strip()
 
 
+def _normalize_status(value):
+    normalized = _normalize_text(value).upper()
+    if normalized == "CHECK TRACKING NUMBER":
+        return "SHIP OUT"
+    return normalized
+
+
 def _normalize_task(task):
     item = deepcopy(task or {})
     item["task_id"] = item.get("task_id")
@@ -29,6 +36,7 @@ def _normalize_task(task):
     item["merchant_name"] = _normalize_text(item.get("merchant_name"))
     item["zip_code"] = _normalize_text(item.get("zip_code"))
     item["phone"] = _normalize_text(item.get("phone"))
+    item["tracking_number"] = _normalize_text(item.get("tracking_number")).upper()
     item["problem"] = _normalize_text(item.get("problem"))
     item["handoff_from_username"] = _normalize_text(item.get("handoff_from_username"))
     item["handoff_from"] = _normalize_text(item.get("handoff_from"))
@@ -45,7 +53,7 @@ def _normalize_task(task):
         if _normalize_text(value)
     ]
     item["handoff_to"] = _normalize_text(item.get("handoff_to")) or "Tech Team"
-    item["status"] = _normalize_text(item.get("status")).upper() or "FOLLOW"
+    item["status"] = _normalize_status(item.get("status")) or "FOLLOW"
     item["deadline"] = _normalize_text(item.get("deadline"))
     item["deadline_date"] = _normalize_text(item.get("deadline_date"))
     item["deadline_time"] = _normalize_text(item.get("deadline_time")) or "02:00"
@@ -85,6 +93,28 @@ def _normalize_notification_item(item):
 
 
 class TaskService:
+    def get_notification_unread_count(self, action_by):
+        try:
+            response = requests.get(
+                f"{API_BASE_URL}/task-follows/notifications/count",
+                params={"action_by": action_by},
+                timeout=20,
+            )
+            payload = response.json()
+        except requests.exceptions.Timeout:
+            return {"success": False, "message": "Timeout while loading notification count."}
+        except requests.exceptions.RequestException as exc:
+            return {"success": False, "message": f"API connection error: {exc}"}
+
+        if not payload.get("success"):
+            return payload
+
+        return {
+            "success": True,
+            "unread_count": max(0, int(payload.get("unread_count", 0) or 0)),
+            "latest_updated_at": _normalize_text(payload.get("latest_updated_at")),
+        }
+
     def get_notification_items(self, action_by):
         try:
             response = requests.get(
@@ -238,7 +268,10 @@ class TaskService:
                 json=payload,
                 timeout=25,
             )
-            return response.json()
+            result = response.json()
+            if result.get("success") and result.get("data") is not None:
+                result["data"] = _normalize_task(result.get("data"))
+            return result
         except requests.exceptions.Timeout:
             return {"success": False, "message": "Timeout while creating task."}
         except requests.exceptions.RequestException as exc:
@@ -251,8 +284,24 @@ class TaskService:
                 json=payload,
                 timeout=25,
             )
-            return response.json()
+            result = response.json()
+            if result.get("success") and result.get("data") is not None:
+                result["data"] = _normalize_task(result.get("data"))
+            return result
         except requests.exceptions.Timeout:
             return {"success": False, "message": "Timeout while updating task."}
+        except requests.exceptions.RequestException as exc:
+            return {"success": False, "message": f"API connection error: {exc}"}
+
+    def delete_task(self, task_id, action_by=""):
+        try:
+            response = requests.delete(
+                f"{API_BASE_URL}/task-follows/{task_id}",
+                params={"action_by": action_by},
+                timeout=25,
+            )
+            return response.json()
+        except requests.exceptions.Timeout:
+            return {"success": False, "message": "Timeout while deleting task."}
         except requests.exceptions.RequestException as exc:
             return {"success": False, "message": f"API connection error: {exc}"}

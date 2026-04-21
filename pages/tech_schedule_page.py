@@ -12,8 +12,7 @@ from datetime import datetime, timedelta
 import math
 
 from services.auth_service import get_tech_schedule_api
-
-API_BASE_URL = "https://underline-steersman-crepe.ngrok-free.dev"
+from services.app_config import API_BASE_URL
 
 # ===== THEME =====
 BG_PAGE       = "transparent"

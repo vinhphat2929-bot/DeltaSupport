@@ -1,6 +1,7 @@
 from copy import deepcopy
 import threading
 import time
+from datetime import datetime
 
 from services.task_service import TaskService
 from stores.base_store import BaseStore
@@ -11,12 +12,30 @@ class NotificationStore(BaseStore):
         super().__init__(ttl_seconds=ttl_seconds)
         self.service = service or TaskService()
         self.unread_count = 0
-        self.read_ids = set()
         self.last_action_by = ""
         self.pending_read_task_ids = set()
         self.read_sync_delay_seconds = 1.2
         self._read_sync_lock = threading.Lock()
         self._read_sync_thread = None
+        self.is_count_loading = False
+        self.count_last_loaded_at = None
+        self.latest_updated_at = ""
+        self._pending_count_request_keys = set()
+        self._pending_list_request_keys = set()
+
+    def _build_request_key(self, request_type, action_by):
+        return f"notifications:{request_type}:{str(action_by or '').strip().lower()}"
+
+    def _mark_count_loaded(self, loaded_at=None):
+        with self._lock:
+            self.is_count_loading = False
+            self.count_last_loaded_at = loaded_at or datetime.now()
+
+    def _is_count_cache_valid(self):
+        with self._lock:
+            if self.count_last_loaded_at is None:
+                return False
+            return datetime.now() - self.count_last_loaded_at <= self.ttl
 
     def _recount_unread(self):
         self.unread_count = len(
@@ -40,6 +59,18 @@ class NotificationStore(BaseStore):
                     task_ids.append(task_id)
         return task_ids
 
+    def _is_task_pending_read(self, task_id):
+        try:
+            normalized_task_id = int(task_id)
+        except (TypeError, ValueError):
+            return False
+
+        if normalized_task_id <= 0:
+            return False
+
+        with self._read_sync_lock:
+            return normalized_task_id in self.pending_read_task_ids
+
     def _normalize_items(self, items):
         normalized_items = []
         for index, item in enumerate(items or []):
@@ -50,20 +81,69 @@ class NotificationStore(BaseStore):
             payload["meta"] = str(payload.get("meta", "")).strip() or "Tap to open Task Follow"
             payload["task_section"] = str(payload.get("task_section", "follow")).strip() or "follow"
             backend_is_read = bool(payload.get("is_read"))
-            if backend_is_read:
-                self.read_ids.add(payload["id"])
-            payload["is_read"] = backend_is_read or payload["id"] in self.read_ids
+            payload["is_read"] = backend_is_read or self._is_task_pending_read(payload.get("task_id"))
             normalized_items.append(payload)
         return normalized_items
 
     def seed(self, items=None, unread_count=0):
         normalized_items = self._normalize_items(items)
         self.upsert_many(normalized_items)
-        self.unread_count = len([item for item in normalized_items if not item.get("is_read")])
+        self.unread_count = max(
+            len([item for item in normalized_items if not item.get("is_read")]),
+            max(0, int(unread_count or 0)),
+        )
+        self.latest_updated_at = ""
         if normalized_items:
             self.mark_loaded()
 
-    def load(self, action_by, force=False, background_if_stale=True):
+    def load_unread_count(self, action_by, force=False):
+        self.last_action_by = str(action_by or "").strip()
+        if not force and self._is_count_cache_valid():
+            self.push_event(
+                "notifications_count_loaded",
+                unread_count=self.unread_count,
+                latest_updated_at=self.latest_updated_at,
+                source="cache",
+            )
+            return
+
+        request_key = self._build_request_key("count", action_by)
+        with self._lock:
+            if request_key in self._pending_count_request_keys:
+                return
+            self._pending_count_request_keys.add(request_key)
+            self.is_count_loading = True
+        threading.Thread(target=self._load_unread_count_worker, args=(action_by, request_key), daemon=True).start()
+
+    def _load_unread_count_worker(self, action_by, request_key):
+        try:
+            result = self.service.get_notification_unread_count(action_by)
+            if not result.get("success"):
+                self.push_event(
+                    "notifications_count_load_failed",
+                    message=result.get("message", "Unable to load notification count."),
+                )
+                return
+
+            unread_count = max(0, int(result.get("unread_count", 0) or 0))
+            latest_updated_at = str(result.get("latest_updated_at", "") or "").strip()
+            with self._lock:
+                self.unread_count = unread_count
+                self.latest_updated_at = latest_updated_at
+                self._mark_count_loaded()
+
+            self.push_event(
+                "notifications_count_loaded",
+                unread_count=self.unread_count,
+                latest_updated_at=self.latest_updated_at,
+                source="network",
+            )
+        finally:
+            with self._lock:
+                self._pending_count_request_keys.discard(request_key)
+                self.is_count_loading = bool(self._pending_count_request_keys)
+
+    def load_full_list(self, action_by, force=False, background_if_stale=True):
         self.last_action_by = str(action_by or "").strip()
         if not force and self.is_cache_valid():
             self.push_event(
@@ -82,39 +162,52 @@ class NotificationStore(BaseStore):
                 source="cache-stale",
             )
 
-        if self.is_loading:
-            return
-
+        request_key = self._build_request_key("list", action_by)
         with self._lock:
+            if request_key in self._pending_list_request_keys:
+                return
+            self._pending_list_request_keys.add(request_key)
             self.is_loading = True
         self.push_event("notifications_loading")
-        threading.Thread(target=self._load_worker, args=(action_by,), daemon=True).start()
+        threading.Thread(target=self._load_worker, args=(action_by, request_key), daemon=True).start()
 
-    def _load_worker(self, action_by):
-        result = self.service.get_notification_items(action_by)
-        if not result.get("success"):
-            with self._lock:
-                self.is_loading = False
-            self.push_event(
-                "notifications_load_failed",
-                message=result.get("message", "Unable to load notifications."),
-            )
-            return
-
-        items = self._normalize_items(result.get("data", []) or [])
-        unread_count = len([item for item in items if not item.get("is_read")])
-        with self._lock:
-            self.upsert_many(items)
-            self.unread_count = unread_count
-            self.mark_loaded()
-
-        self.push_event(
-            "notifications_loaded",
-            items=self.get_all(),
-            unread_count=self.unread_count,
-            source="network",
+    def load(self, action_by, force=False, background_if_stale=True):
+        self.load_full_list(
+            action_by,
+            force=force,
+            background_if_stale=background_if_stale,
         )
-        self._schedule_read_sync(action_by, delay_seconds=0.2)
+
+    def _load_worker(self, action_by, request_key):
+        try:
+            result = self.service.get_notification_items(action_by)
+            if not result.get("success"):
+                self.push_event(
+                    "notifications_load_failed",
+                    message=result.get("message", "Unable to load notifications."),
+                )
+                return
+
+            items = self._normalize_items(result.get("data", []) or [])
+            unread_count = len([item for item in items if not item.get("is_read")])
+            with self._lock:
+                self.upsert_many(items)
+                self.unread_count = unread_count
+                self.latest_updated_at = ""
+                self.mark_loaded()
+                self._mark_count_loaded(self.last_loaded_at)
+
+            self.push_event(
+                "notifications_loaded",
+                items=self.get_all(),
+                unread_count=self.unread_count,
+                source="network",
+            )
+            self._schedule_read_sync(action_by, delay_seconds=0.2)
+        finally:
+            with self._lock:
+                self._pending_list_request_keys.discard(request_key)
+                self.is_loading = bool(self._pending_list_request_keys)
 
     def _extract_task_ids_for_notice(self, notice_id):
         task_ids = set()
@@ -137,7 +230,6 @@ class NotificationStore(BaseStore):
             return
 
         action_by = str(action_by or "").strip() or self.last_action_by
-        self.read_ids.add(notice_id)
         task_ids = self._extract_task_ids_for_notice(notice_id)
         if task_ids:
             with self._read_sync_lock:
@@ -169,9 +261,6 @@ class NotificationStore(BaseStore):
         with self._lock:
             for item_id, item in list(self.items_by_id.items()):
                 updated_item = deepcopy(item)
-                notice_id = str(updated_item.get("id", "")).strip()
-                if notice_id:
-                    self.read_ids.add(notice_id)
                 updated_item["is_read"] = True
                 self.items_by_id[item_id] = updated_item
             self._recount_unread()

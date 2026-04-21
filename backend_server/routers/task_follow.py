@@ -16,7 +16,7 @@ router = APIRouter()
 ALLOWED_STATUSES = {
     "FOLLOW",
     "FOLLOW REQUEST",
-    "CHECK TRACKING NUMBER",
+    "SHIP OUT",
     "SET UP & TRAINING",
     "2ND TRAINING",
     "MISS TIP / CHARGE BACK",
@@ -34,6 +34,13 @@ def normalize_username(value):
 
 
 def normalize_status(value):
+    normalized = normalize_text(value).upper()
+    if normalized == "CHECK TRACKING NUMBER":
+        return "SHIP OUT"
+    return normalized
+
+
+def normalize_tracking_number(value):
     return normalize_text(value).upper()
 
 
@@ -253,6 +260,23 @@ def ensure_task_follow_recipient_table(cursor):
 
 
 def ensure_task_follow_training_columns(cursor):
+    schema_changed = False
+
+    cursor.execute(
+        """
+        SELECT
+            CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingFormJson') IS NULL THEN 1 ELSE 0 END,
+            CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingStartedAt') IS NULL THEN 1 ELSE 0 END,
+            CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingStartedByUsername') IS NULL THEN 1 ELSE 0 END,
+            CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingStartedByDisplayName') IS NULL THEN 1 ELSE 0 END,
+            CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingCompletedTabsJson') IS NULL THEN 1 ELSE 0 END,
+            CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrackingNumber') IS NULL THEN 1 ELSE 0 END
+        """
+    )
+    row = cursor.fetchone()
+    if row:
+        schema_changed = any(int(value or 0) == 1 for value in row)
+
     cursor.execute(
         """
         IF COL_LENGTH('dbo.TaskFollow', 'TrainingFormJson') IS NULL
@@ -298,6 +322,32 @@ def ensure_task_follow_training_columns(cursor):
         END
         """
     )
+    cursor.execute(
+        """
+        IF COL_LENGTH('dbo.TaskFollow', 'TrackingNumber') IS NULL
+        BEGIN
+            ALTER TABLE dbo.TaskFollow
+            ADD TrackingNumber NVARCHAR(100) NULL
+        END
+        """
+    )
+
+    if schema_changed:
+        cursor.connection.commit()
+
+    return schema_changed
+
+
+def bootstrap_task_follow_schema():
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        ensure_task_follow_training_columns(cursor)
+        conn.commit()
+    finally:
+        if conn:
+            conn.close()
 
 
 def serialize_training_form_json(value):
@@ -510,6 +560,7 @@ def build_task_response(row, history_items=None, recipient_items=None):
         "merchant_name": normalize_text(row.MerchantName),
         "zip_code": normalize_text(row.ZipCode),
         "phone": normalize_text(row.Phone),
+        "tracking_number": normalize_tracking_number(getattr(row, "TrackingNumber", "")),
         "problem": normalize_text(row.ProblemSummary),
         "handoff_from_username": normalize_text(row.HandoffFromUsername),
         "handoff_from": normalize_text(row.HandoffFromDisplayName),
@@ -620,6 +671,10 @@ def serialize_recipient_signature(recipients):
     return tuple(sorted(normalized))
 
 
+def is_notification_refresh_relevant(status_changed, recipient_changed):
+    return bool(status_changed or recipient_changed)
+
+
 def replace_task_recipients(cursor, task_id, recipients):
     ensure_task_follow_recipient_table(cursor)
     cursor.execute("DELETE FROM dbo.TaskFollowRecipient WHERE TaskID = ?", (task_id,))
@@ -654,6 +709,7 @@ def get_task_by_id(cursor, task_id):
             MerchantName,
             ZipCode,
             Phone,
+            TrackingNumber,
             ProblemSummary,
             HandoffFromUsername,
             HandoffFromDisplayName,
@@ -1031,6 +1087,7 @@ def get_task_follows(action_by: str, search: str = "", show_all: bool = False, i
                 MerchantName,
                 ZipCode,
                 Phone,
+                TrackingNumber,
                 ProblemSummary,
                 HandoffFromUsername,
                 HandoffFromDisplayName,
@@ -1149,7 +1206,12 @@ def get_task_follow_notifications(action_by: str):
                 tf.DeadlineTime,
                 tf.HandoffFromDisplayName,
                 tf.UpdatedAt,
-                CASE WHEN nr.TaskID IS NULL THEN 0 ELSE 1 END AS IsRead
+                CASE
+                    WHEN nr.TaskID IS NOT NULL
+                     AND nr.ReadAt >= ISNULL(tf.UpdatedAt, GETDATE())
+                    THEN 1
+                    ELSE 0
+                END AS IsRead
             FROM dbo.TaskFollow tf
             LEFT JOIN dbo.TaskFollowNotificationRead nr
                 ON nr.TaskID = tf.TaskID
@@ -1162,7 +1224,10 @@ def get_task_follow_notifications(action_by: str):
                AND tr.Username = ?
             WHERE tf.IsActive = 1
               AND UPPER(tf.Status) <> 'DONE'
-              AND nd.TaskID IS NULL
+              AND (
+                    nd.TaskID IS NULL
+                    OR nd.DismissedAt < ISNULL(tf.UpdatedAt, GETDATE())
+                  )
               AND (
                     tr.TaskID IS NOT NULL
                     OR (
@@ -1213,6 +1278,86 @@ def get_task_follow_notifications(action_by: str):
             "success": True,
             "unread_count": unread_count,
             "data": items,
+        }
+
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.get("/task-follows/notifications/count")
+def get_task_follow_notification_count(action_by: str):
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        action_by = normalize_username(action_by)
+        if not action_by:
+            return {"success": False, "message": "Missing action_by."}
+
+        cursor.execute("SELECT Username, Department FROM dbo.Users WHERE Username = ?", (action_by,))
+        user_row = cursor.fetchone()
+        if not user_row:
+            return {"success": False, "message": "User not found."}
+        current_department = normalize_text(user_row[1])
+        is_technical_support_user = current_department == "Technical Support"
+
+        ensure_task_follow_notification_read_table(cursor)
+        ensure_task_follow_notification_dismiss_table(cursor)
+        ensure_task_follow_recipient_table(cursor)
+
+        cursor.execute(
+            """
+            SELECT
+                COUNT(DISTINCT tf.TaskID) AS UnreadCount,
+                MAX(tf.UpdatedAt) AS LatestUpdatedAt
+            FROM dbo.TaskFollow tf
+            LEFT JOIN dbo.TaskFollowNotificationRead nr
+                ON nr.TaskID = tf.TaskID
+               AND nr.Username = ?
+            LEFT JOIN dbo.TaskFollowNotificationDismiss nd
+                ON nd.TaskID = tf.TaskID
+               AND nd.Username = ?
+            LEFT JOIN dbo.TaskFollowRecipient tr
+                ON tr.TaskID = tf.TaskID
+               AND tr.Username = ?
+            WHERE tf.IsActive = 1
+              AND UPPER(tf.Status) <> 'DONE'
+              AND (
+                    nd.TaskID IS NULL
+                    OR nd.DismissedAt < ISNULL(tf.UpdatedAt, GETDATE())
+                  )
+              AND (
+                    tr.TaskID IS NOT NULL
+                    OR (
+                        UPPER(ISNULL(tf.HandoffToType, '')) = 'USER'
+                        AND tf.HandoffToUsername = ?
+                    )
+                    OR (
+                        ? = 1
+                        AND UPPER(ISNULL(tf.HandoffToType, '')) = 'TEAM'
+                    )
+                  )
+              AND (
+                    nr.TaskID IS NULL
+                    OR nr.ReadAt < ISNULL(tf.UpdatedAt, GETDATE())
+                  )
+            """,
+            (action_by, action_by, action_by, action_by, 1 if is_technical_support_user else 0),
+        )
+        row = cursor.fetchone()
+        latest_updated_at = None
+        if row and getattr(row, "LatestUpdatedAt", None):
+            latest_updated_at = row.LatestUpdatedAt.strftime("%Y-%m-%d %H:%M:%S")
+
+        return {
+            "success": True,
+            "unread_count": int(getattr(row, "UnreadCount", 0) or 0) if row else 0,
+            "latest_updated_at": latest_updated_at,
         }
 
     except Exception as e:
@@ -1311,17 +1456,30 @@ def mark_task_follow_notifications_read(data: TaskFollowNotificationReadRequest)
         for task_id in valid_task_ids:
             cursor.execute(
                 """
-                IF NOT EXISTS (
+                IF EXISTS (
                     SELECT 1
                     FROM dbo.TaskFollowNotificationRead
                     WHERE TaskID = ? AND Username = ?
                 )
                 BEGIN
+                    UPDATE dbo.TaskFollowNotificationRead
+                    SET ReadAt = GETDATE()
+                    WHERE TaskID = ? AND Username = ?
+                END
+                ELSE
+                BEGIN
                     INSERT INTO dbo.TaskFollowNotificationRead (TaskID, Username, ReadAt)
                     VALUES (?, ?, GETDATE())
                 END
                 """,
-                (task_id, action_by_username, task_id, action_by_username),
+                (
+                    task_id,
+                    action_by_username,
+                    task_id,
+                    action_by_username,
+                    task_id,
+                    action_by_username,
+                ),
             )
             marked_count += 1
 
@@ -1405,17 +1563,30 @@ def clear_task_follow_notifications(data: TaskFollowNotificationClearRequest):
         for task_id in valid_task_ids:
             cursor.execute(
                 """
-                IF NOT EXISTS (
+                IF EXISTS (
                     SELECT 1
                     FROM dbo.TaskFollowNotificationDismiss
                     WHERE TaskID = ? AND Username = ?
                 )
                 BEGIN
+                    UPDATE dbo.TaskFollowNotificationDismiss
+                    SET DismissedAt = GETDATE()
+                    WHERE TaskID = ? AND Username = ?
+                END
+                ELSE
+                BEGIN
                     INSERT INTO dbo.TaskFollowNotificationDismiss (TaskID, Username, DismissedAt)
                     VALUES (?, ?, GETDATE())
                 END
                 """,
-                (task_id, action_by_username, task_id, action_by_username),
+                (
+                    task_id,
+                    action_by_username,
+                    task_id,
+                    action_by_username,
+                    task_id,
+                    action_by_username,
+                ),
             )
             cleared_count += 1
 
@@ -1442,6 +1613,7 @@ def create_task_follow(data: TaskFollowUpsertRequest):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        ensure_task_follow_training_columns(cursor)
 
         action_by_username = normalize_username(data.action_by_username)
         if not action_by_username:
@@ -1458,6 +1630,10 @@ def create_task_follow(data: TaskFollowUpsertRequest):
         status = normalize_status(data.status)
         if status not in ALLOWED_STATUSES:
             return {"success": False, "message": "Status is invalid."}
+
+        tracking_number = normalize_tracking_number(getattr(data, "tracking_number", ""))
+        if status == "SHIP OUT" and not tracking_number:
+            return {"success": False, "message": "Tracking number is required for SHIP OUT."}
 
         note_text = normalize_text(data.note)
         if status == "DONE" and not note_text:
@@ -1477,6 +1653,9 @@ def create_task_follow(data: TaskFollowUpsertRequest):
         handoff_to_username = handoff_selection["summary_username"]
         handoff_to_display_name = handoff_selection["summary_display_name"] or "Tech Team"
         handoff_recipients = handoff_selection["recipients"]
+        recipient_changed = True
+        status_changed = True
+        notification_relevant = bool(status != "DONE")
 
         if handoff_to_type != "TEAM" and not handoff_recipients:
             return {"success": False, "message": "Handoff target is required."}
@@ -1498,6 +1677,7 @@ def create_task_follow(data: TaskFollowUpsertRequest):
             merchant_name,
             zip_code,
             normalize_text(data.phone),
+            tracking_number,
             normalize_text(data.problem_summary),
             action_by_username,
             actor_display_name,
@@ -1527,6 +1707,7 @@ def create_task_follow(data: TaskFollowUpsertRequest):
                     MerchantName,
                     ZipCode,
                     Phone,
+                    TrackingNumber,
                     ProblemSummary,
                     HandoffFromUsername,
                     HandoffFromDisplayName,
@@ -1549,7 +1730,7 @@ def create_task_follow(data: TaskFollowUpsertRequest):
                 )
                 OUTPUT INSERTED.TaskID
                 VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), 1)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), 1)
                 """,
                 task_values,
             )
@@ -1572,6 +1753,7 @@ def create_task_follow(data: TaskFollowUpsertRequest):
                         MerchantName,
                         ZipCode,
                         Phone,
+                        TrackingNumber,
                         ProblemSummary,
                         HandoffFromUsername,
                         HandoffFromDisplayName,
@@ -1593,7 +1775,7 @@ def create_task_follow(data: TaskFollowUpsertRequest):
                         IsActive
                     )
                     VALUES
-                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), 1)
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), 1)
                     """,
                     (task_id, *task_values),
                 )
@@ -1608,6 +1790,7 @@ def create_task_follow(data: TaskFollowUpsertRequest):
                             MerchantName,
                             ZipCode,
                             Phone,
+                            TrackingNumber,
                             ProblemSummary,
                             HandoffFromUsername,
                             HandoffFromDisplayName,
@@ -1630,7 +1813,7 @@ def create_task_follow(data: TaskFollowUpsertRequest):
                         )
                         OUTPUT INSERTED.TaskID
                         VALUES
-                        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), 1)
+                        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), 1)
                         """,
                         task_values,
                     )
@@ -1657,13 +1840,19 @@ def create_task_follow(data: TaskFollowUpsertRequest):
 
         conn.commit()
         created_row = get_task_by_id(cursor, task_id)
+        created_history = get_task_logs(cursor, task_id)
+        created_recipients = get_task_recipients(cursor, task_id)
         is_visible_on_board = bool(
             created_row and is_task_in_board_scope(created_row.Status, created_row.DeadlineDate)
         )
         return {
             "success": True,
             "task_id": task_id,
+            "data": build_task_response(created_row, created_history, created_recipients) if created_row else None,
             "visible_on_board": is_visible_on_board,
+            "notification_relevant": notification_relevant,
+            "recipient_changed": recipient_changed,
+            "status_changed": status_changed,
             "message": (
                 "Task created successfully."
                 if is_visible_on_board
@@ -1687,6 +1876,7 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        ensure_task_follow_training_columns(cursor)
 
         action_by_username = normalize_username(data.action_by_username)
         if not action_by_username:
@@ -1717,6 +1907,10 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
         status = normalize_status(data.status)
         if status not in ALLOWED_STATUSES:
             return {"success": False, "message": "Status is invalid."}
+
+        tracking_number = normalize_tracking_number(getattr(data, "tracking_number", ""))
+        if status == "SHIP OUT" and not tracking_number:
+            return {"success": False, "message": "Tracking number is required for SHIP OUT."}
 
         note_text = normalize_text(data.note)
         if status == "DONE" and not note_text:
@@ -1770,6 +1964,7 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
                 MerchantName = ?,
                 ZipCode = ?,
                 Phone = ?,
+                TrackingNumber = ?,
                 ProblemSummary = ?,
                 HandoffFromUsername = ?,
                 HandoffFromDisplayName = ?,
@@ -1795,6 +1990,7 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
                 merchant_name,
                 zip_code,
                 normalize_text(data.phone),
+                tracking_number,
                 normalize_text(data.problem_summary),
                 action_by_username,
                 actor_display_name,
@@ -1841,26 +2037,88 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
         new_signature = serialize_recipient_signature(
             handoff_recipients or [{"type": "TEAM", "username": "", "display_name": "Tech Team"}]
         )
+        recipient_changed = new_signature != previous_signature
+        previous_status = normalize_status(previous_row.Status) if previous_row else ""
+        status_changed = previous_status != status
+        notification_relevant = is_notification_refresh_relevant(
+            status_changed=status_changed,
+            recipient_changed=recipient_changed,
+        )
 
         if note_text:
             insert_task_log(cursor, task_id, "UPDATE", log_payload, actor_display_name)
-        if new_signature != previous_signature:
+        if recipient_changed:
             insert_assignment_log(cursor, task_id, log_payload, actor_display_name)
 
         conn.commit()
         updated_row = get_task_by_id(cursor, task_id)
+        updated_history = get_task_logs(cursor, task_id)
+        updated_recipients = get_task_recipients(cursor, task_id)
         is_visible_on_board = bool(
             updated_row and is_task_in_board_scope(updated_row.Status, updated_row.DeadlineDate)
         )
         return {
             "success": True,
             "task_id": task_id,
+            "data": build_task_response(updated_row, updated_history, updated_recipients) if updated_row else None,
             "visible_on_board": is_visible_on_board,
+            "notification_relevant": notification_relevant,
+            "recipient_changed": recipient_changed,
+            "status_changed": status_changed,
             "message": (
                 "Task updated successfully."
                 if is_visible_on_board
                 else "Task updated successfully, but it is outside the current board filter."
             ),
+        }
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"success": False, "message": str(e)}
+
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.delete("/task-follows/{task_id}")
+def delete_task_follow(task_id: int, action_by: str = ""):
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        ensure_task_follow_training_columns(cursor)
+        ensure_task_follow_notification_read_table(cursor)
+        ensure_task_follow_notification_dismiss_table(cursor)
+        ensure_task_follow_recipient_table(cursor)
+
+        action_by_username = normalize_username(action_by)
+        if not action_by_username:
+            return {"success": False, "message": "Missing action_by."}
+
+        cursor.execute("SELECT Username FROM dbo.Users WHERE Username = ?", (action_by_username,))
+        if not cursor.fetchone():
+            return {"success": False, "message": "User not found."}
+
+        existing_row = get_task_by_id(cursor, task_id)
+        if not existing_row:
+            return {"success": False, "message": "Task not found."}
+
+        notification_relevant = normalize_status(existing_row.Status) != "DONE"
+
+        cursor.execute("DELETE FROM dbo.TaskFollowNotificationRead WHERE TaskID = ?", (task_id,))
+        cursor.execute("DELETE FROM dbo.TaskFollowNotificationDismiss WHERE TaskID = ?", (task_id,))
+        cursor.execute("DELETE FROM dbo.TaskFollowRecipient WHERE TaskID = ?", (task_id,))
+        cursor.execute("DELETE FROM dbo.TaskFollowLog WHERE TaskID = ?", (task_id,))
+        cursor.execute("DELETE FROM dbo.TaskFollow WHERE TaskID = ?", (task_id,))
+
+        conn.commit()
+        return {
+            "success": True,
+            "task_id": task_id,
+            "notification_relevant": notification_relevant,
+            "message": "Task deleted successfully.",
         }
 
     except Exception as e:

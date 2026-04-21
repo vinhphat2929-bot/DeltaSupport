@@ -1,6 +1,6 @@
 import requests
 
-from services.auth_service import API_BASE_URL
+from services.app_config import API_BASE_URL
 
 
 def get_task_follows_api(action_by, search="", show_all=False, include_done=False):

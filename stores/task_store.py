@@ -26,6 +26,14 @@ class TaskStore(BaseStore):
     def _view_key(self, show_all=None, include_done=None):
         return (bool(self.show_all if show_all is None else show_all), bool(self.include_done if include_done is None else include_done))
 
+    def _handoff_request_key(self, action_by, task_date="", task_time="", task_period=""):
+        return (
+            f"handoff:{str(action_by or '').strip().lower()}:"
+            f"{str(task_date or '').strip()}:"
+            f"{str(task_time or '').strip()}:"
+            f"{str(task_period or '').strip().upper()}"
+        )
+
     def _snapshot_state(self):
         return {
             "items_by_id": deepcopy(self.items_by_id),
@@ -125,12 +133,7 @@ class TaskStore(BaseStore):
         )
 
     def load_handoff_options(self, action_by, task_date="", task_time="", task_period=""):
-        key = (
-            str(action_by or "").strip().lower(),
-            str(task_date or "").strip(),
-            str(task_time or "").strip(),
-            str(task_period or "").strip().upper(),
-        )
+        key = self._handoff_request_key(action_by, task_date, task_time, task_period)
         cached = self._handoff_cache.get(key)
         if cached:
             self.handoff_options = deepcopy(cached["options"])
@@ -196,6 +199,7 @@ class TaskStore(BaseStore):
                     str(item.get("merchant_raw", "")),
                     str(item.get("merchant_name", "")),
                     str(item.get("phone", "")),
+                    str(item.get("tracking_number", "")),
                     str(item.get("problem", "")),
                     str(item.get("handoff_to", "")),
                     str(item.get("status", "")),
@@ -291,6 +295,7 @@ class TaskStore(BaseStore):
                 "merchant_name": payload.get("merchant_raw_text", source.get("merchant_name", "")),
                 "zip_code": source.get("zip_code", ""),
                 "phone": payload.get("phone", source.get("phone", "")),
+                "tracking_number": payload.get("tracking_number", source.get("tracking_number", "")),
                 "problem": payload.get("problem_summary", source.get("problem", "")),
                 "handoff_from_username": payload.get("action_by_username", source.get("handoff_from_username", "")),
                 "handoff_from": actor_display_name or source.get("handoff_from", ""),
@@ -372,10 +377,8 @@ class TaskStore(BaseStore):
         self.dirty_ids.discard(temp_id)
         self.push_event("task_removed", item_id=temp_id, optimistic=False)
 
-        detail_result = self.service.get_task_detail(new_task_id, action_by=action_by)
-        if detail_result.get("success"):
-            item = detail_result.get("data")
-        else:
+        item = result.get("data")
+        if not item:
             item = self._build_task_from_payload(payload, new_task_id, actor_display_name)
             item["is_optimistic"] = False
             item["is_saving"] = False
@@ -395,6 +398,9 @@ class TaskStore(BaseStore):
             item_id=new_task_id,
             message=result.get("message", "Task created successfully."),
             visible_on_board=bool(result.get("visible_on_board")),
+            notification_relevant=bool(result.get("notification_relevant")),
+            recipient_changed=bool(result.get("recipient_changed")),
+            status_changed=bool(result.get("status_changed")),
         )
 
     def update_item(self, task_id, payload, actor_display_name, action_by):
@@ -441,10 +447,8 @@ class TaskStore(BaseStore):
             )
             return
 
-        detail_result = self.service.get_task_detail(task_id, action_by=action_by)
-        if detail_result.get("success"):
-            item = detail_result.get("data")
-        else:
+        item = result.get("data")
+        if not item:
             item = self._build_task_from_payload(payload, task_id, actor_display_name, existing=original_item)
             item["is_optimistic"] = False
             item["is_saving"] = False
@@ -471,4 +475,53 @@ class TaskStore(BaseStore):
             item_id=task_id,
             message=result.get("message", "Task updated successfully."),
             visible_on_board=bool(result.get("visible_on_board")),
+            notification_relevant=bool(result.get("notification_relevant")),
+            recipient_changed=bool(result.get("recipient_changed")),
+            status_changed=bool(result.get("status_changed")),
+        )
+
+    def delete_item(self, task_id, action_by):
+        original_item = self.get_by_id(task_id)
+        if not original_item:
+            self.push_event("task_delete_failed", item_id=task_id, message="Task not found in cache.")
+            return
+
+        with self._lock:
+            self.remove(task_id)
+            self.dirty_ids.add(task_id)
+            self._save_active_snapshot()
+        self.push_event("task_removed", item_id=task_id, optimistic=True)
+
+        threading.Thread(
+            target=self._delete_worker,
+            args=(task_id, deepcopy(original_item), action_by),
+            daemon=True,
+        ).start()
+
+    def _delete_worker(self, task_id, original_item, action_by):
+        result = self.service.delete_task(task_id, action_by=action_by)
+        if not result.get("success"):
+            with self._lock:
+                self.upsert_one(original_item)
+                self._sort_current_ids()
+                self.dirty_ids.discard(task_id)
+                self._save_active_snapshot()
+            self.push_event(
+                "task_delete_failed",
+                item_id=task_id,
+                message=result.get("message", "Unable to delete task."),
+            )
+            self.push_event("task_upserted", item=self.get_by_id(task_id), item_id=task_id, optimistic=False)
+            return
+
+        with self._lock:
+            self.dirty_ids.discard(task_id)
+            self.remove(task_id)
+            self._save_active_snapshot()
+
+        self.push_event(
+            "task_delete_succeeded",
+            item_id=task_id,
+            message=result.get("message", "Task deleted successfully."),
+            notification_relevant=bool(result.get("notification_relevant")),
         )

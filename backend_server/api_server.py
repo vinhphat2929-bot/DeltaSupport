@@ -10,6 +10,12 @@ def root():
     return {"status": "API OK"}
 
 
+@app.on_event("startup")
+def bootstrap_app_schema():
+    task_follow.bootstrap_task_follow_schema()
+    pin.bootstrap_pin_schema()
+
+
 app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(pin.router)

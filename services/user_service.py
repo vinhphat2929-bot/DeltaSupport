@@ -1,6 +1,6 @@
 import requests
 
-API_BASE_URL = "https://underline-steersman-crepe.ngrok-free.dev"
+from services.app_config import API_BASE_URL
 
 
 def change_password_api(username, old_password, new_password):

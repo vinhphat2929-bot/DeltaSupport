@@ -1,6 +1,6 @@
 import requests
 
-from services.auth_service import API_BASE_URL
+from services.app_config import API_BASE_URL
 
 
 def create_sync_card_to_ticket_log_api(

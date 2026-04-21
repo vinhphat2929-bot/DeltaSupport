@@ -141,6 +141,7 @@ class TaskFollowUpsertRequest(BaseModel):
     action_by_username: str
     merchant_raw_text: str
     phone: str = ""
+    tracking_number: str = ""
     problem_summary: str = ""
     handoff_to_type: str = ""
     handoff_to_username: str = ""

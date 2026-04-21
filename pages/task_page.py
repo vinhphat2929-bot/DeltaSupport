@@ -35,7 +35,7 @@ ERROR_TEXT = "#7f1d1d"
 STATUS_META = {
     "FOLLOW": {"bg": "#2d6cdf", "text": "#ffffff"},
     "FOLLOW REQUEST": {"bg": "#2563eb", "text": "#ffffff"},
-    "CHECK TRACKING NUMBER": {"bg": "#0f766e", "text": "#ffffff"},
+    "SHIP OUT": {"bg": "#0f766e", "text": "#ffffff"},
     "SET UP & TRAINING": {"bg": "#9333ea", "text": "#ffffff"},
     "MISS TIP / CHARGE BACK": {"bg": "#f59e0b", "text": "#2a221d"},
     "DONE": {"bg": "#ef4444", "text": "#ffffff"},
