@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import datetime
 import time
 from tkinter import messagebox
@@ -49,8 +50,8 @@ class ProcessPage(ctk.CTkFrame):
 
     TRAINING_RESULT_OPTIONS = ["", "DONE", "X"]
     TRAINING_CANVAS_BG = "#fffaf4"
-    TRAINING_BANNER_BG = "#f8eddc"
-    TRAINING_SUBHEADER_BG = "#efe1ca"
+    TRAINING_BANNER_BG = "#f1dec0"
+    TRAINING_SUBHEADER_BG = "#e3c998"
     TRAINING_GROUP_BG = "#f6eee2"
 
     def __init__(self, parent, initial_section="report", current_user=None, initial_task_id=None):
@@ -92,6 +93,7 @@ class ProcessPage(ctk.CTkFrame):
         self.follow_layout_mode = None
         self.active_scroll_target = None
         self.follow_mousewheel_bind_id = None
+        self.follow_click_bind_id = None
         self.follow_poll_after_id = None
         self.follow_refresh_button = None
         self.follow_action_cooldown_ms = 3000
@@ -102,11 +104,24 @@ class ProcessPage(ctk.CTkFrame):
         self.follow_layout_pending_size = None
         self.follow_layout_applied_size = (0, 0)
         self.follow_canvas_redraw_after_id = None
+        self.follow_canvas_force_redraw = False
         self.follow_canvas_last_render_size = (0, 0)
+        self.follow_board_render_signature = None
+        self.follow_canvas_row_meta = {}
+        self.follow_canvas_active_task_id = None
+        self.follow_visible_range = (0, 100)
+        self.training_visible_range = (0, 100)
+        self.follow_board_virtual_buffer_rows = 10
+        self.follow_board_suppress_selection_scroll = False
+        self.follow_search_after_id = None
+        self.follow_search_debounce_ms = 300
+        self.follow_search_pending_query = ""
+        self.follow_search_last_applied_query = ""
         self.follow_tasks = []
         self.filtered_follow_tasks = []
         self.active_task = None
         self.training_popup = None
+        self.training_info_popup = None
         self.training_result_vars = {}
         self.training_note_entries = {}
         self.training_note_values = {}
@@ -118,6 +133,10 @@ class ProcessPage(ctk.CTkFrame):
         self.training_canvas_flat_rows = []
         self.training_canvas_content_height = 0
         self.training_canvas_after_id = None
+        self.training_note_reflow_after_id = None
+        self.training_canvas_last_render_key = None
+        self.detail_scroll_after_id = None
+        self.follow_scroll_restore_after_id = None
         self.follow_search_scope = "board"
         self.follow_show_all = False
         self.follow_include_done = False
@@ -125,6 +144,106 @@ class ProcessPage(ctk.CTkFrame):
         self.follow_board_max_height = 520
         self.follow_board_height = self.follow_board_min_height
         self.follow_board_scroll_enabled = False
+        self.follow_detail_pending_id = None
+        self.follow_form_render_signature = None
+        self.follow_history_render_signature = None
+        self.setup_training_form_render_signature = None
+        self.rendered_section = None
+        self.page_active = True
+        self.debug_background_jobs = False
+        self.task_section_hosts = {}
+        self.task_section_widget_cache = {}
+        self.task_section_state_cache = {}
+        self.task_section_widget_names = [
+            "follow_wrap",
+            "follow_top_card",
+            "search_entry",
+            "show_all_button",
+            "include_done_switch",
+            "follow_board_card",
+            "follow_canvas",
+            "follow_scrollbar",
+            "detail_form",
+            "follow_header_canvas",
+            "follow_scope_label",
+            "detail_card",
+            "table_card",
+            "follow_canvas_wrap",
+            "detail_hint",
+            "merchant_name_entry",
+            "phone_entry",
+            "tracking_number_entry",
+            "tracking_number_row",
+            "track_ups_button_row",
+            "track_ups_button",
+            "problem_entry",
+            "handoff_from_entry",
+            "deadline_picker_button",
+            "deadline_value_hint",
+            "handoff_button_wrap",
+            "status_buttons",
+            "note_box",
+            "follow_save_button",
+            "follow_update_button",
+            "follow_delete_button",
+            "history_box",
+            "training_merchant_label",
+            "training_date_label",
+            "training_stage_badge",
+            "start_training_button",
+            "tab_wrap",
+            "checklist_tabs",
+            "training_sections_wrap",
+            "training_canvas",
+            "training_list_frame",
+            "action_row",
+            "complete_tab_button",
+            "follow_complete_training_button",
+            "view_training_info_button",
+        ]
+        self.task_section_state_names = [
+            "active_task",
+            "selected_status",
+            "selected_handoff_to",
+            "selected_handoff_targets",
+            "confirmed_deadline_date",
+            "confirmed_deadline_time",
+            "pending_deadline_date",
+            "pending_deadline_time",
+            "follow_search_scope",
+            "follow_search_pending_query",
+            "follow_search_last_applied_query",
+            "follow_layout_mode",
+            "follow_layout_pending_size",
+            "follow_layout_applied_size",
+            "follow_canvas_last_render_size",
+            "follow_board_render_signature",
+            "follow_canvas_row_meta",
+            "follow_canvas_active_task_id",
+            "follow_visible_range",
+            "training_visible_range",
+            "follow_board_height",
+            "follow_board_scroll_enabled",
+            "canvas_row_hits",
+            "follow_tasks",
+            "filtered_follow_tasks",
+            "follow_detail_pending_id",
+            "follow_form_render_signature",
+            "follow_history_render_signature",
+            "setup_training_form_render_signature",
+            "is_training_started",
+            "completed_tabs",
+            "current_training_tab",
+            "training_form_draft_sections",
+            "training_note_values",
+            "training_result_vars",
+            "training_note_entries",
+            "training_canvas_window_map",
+            "training_canvas_row_layout",
+            "training_canvas_flat_rows",
+            "training_canvas_content_height",
+            "training_canvas_last_render_key",
+        ]
         self.current_task_section = (
             initial_section if initial_section in {"follow", "setup_training"} else "follow"
         )
@@ -134,6 +253,7 @@ class ProcessPage(ctk.CTkFrame):
             self.follow_show_all = True
 
         self.build_ui()
+        self.bind("<Map>", self._on_page_map, add="+")
         self.render_section(initial_section)
 
     def build_ui(self):
@@ -177,34 +297,240 @@ class ProcessPage(ctk.CTkFrame):
         self.body_card.grid_columnconfigure(0, weight=1)
         self.body_card.grid_rowconfigure(0, weight=1)
 
+    def _debug_job(self, label, message):
+        if not getattr(self, "debug_background_jobs", False):
+            return
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        section = self.rendered_section or self.current_task_section or "unknown"
+        print(f"[{timestamp}] [ProcessPage:{section}] {label} | {message}")
+
+    def is_page_active_and_visible(self, require_visible=True):
+        if not getattr(self, "page_active", False):
+            return False
+        if not self.winfo_exists():
+            return False
+        if not require_visible:
+            return True
+        try:
+            return bool(self.winfo_ismapped())
+        except Exception:
+            return False
+
+    def _can_run_page_job(self, label, require_visible=True):
+        exists = False
+        visible = False
+        try:
+            exists = bool(self.winfo_exists())
+        except Exception:
+            exists = False
+        active = bool(getattr(self, "page_active", False))
+        if exists:
+            try:
+                visible = bool(self.winfo_ismapped())
+            except Exception:
+                visible = False
+
+        allowed = exists and active and (visible if require_visible else True)
+        if not allowed:
+            self._debug_job(
+                label,
+                f"skip exists={exists} active={active} visible={visible} require_visible={require_visible}",
+            )
+        return allowed
+
+    def _cancel_after_slot(self, slot_name, label):
+        after_id = getattr(self, slot_name, None)
+        if not after_id:
+            return False
+        try:
+            self.after_cancel(after_id)
+            self._debug_job(label, f"cancel id={after_id}")
+        except Exception as exc:
+            self._debug_job(label, f"cancel_failed id={after_id} error={exc}")
+        setattr(self, slot_name, None)
+        return True
+
+    def _schedule_after_slot(self, slot_name, delay_ms, callback, label, require_visible=True):
+        self._cancel_after_slot(slot_name, label)
+        job_ref = {}
+
+        def _wrapped():
+            scheduled_id = job_ref.get("id")
+            if getattr(self, slot_name, None) != scheduled_id:
+                self._debug_job(label, f"skip_stale id={scheduled_id} current={getattr(self, slot_name, None)}")
+                return
+            setattr(self, slot_name, None)
+            self._debug_job(label, f"callback id={scheduled_id}")
+            if not self._can_run_page_job(label, require_visible=require_visible):
+                return
+            callback()
+
+        job_ref["id"] = self.after(delay_ms, _wrapped)
+        setattr(self, slot_name, job_ref["id"])
+        self._debug_job(label, f"schedule id={job_ref['id']} delay_ms={delay_ms}")
+        return job_ref["id"]
+
+    def _cancel_follow_action_state_refresh(self, action_key):
+        after_id = self.follow_action_after_ids.get(action_key)
+        if not after_id:
+            self.follow_action_after_ids[action_key] = None
+            return False
+        try:
+            self.after_cancel(after_id)
+            self._debug_job(f"follow_action:{action_key}", f"cancel id={after_id}")
+        except Exception as exc:
+            self._debug_job(f"follow_action:{action_key}", f"cancel_failed id={after_id} error={exc}")
+        self.follow_action_after_ids[action_key] = None
+        return True
+
+    def _cancel_process_jobs(self, include_poll=True):
+        if include_poll:
+            self._cancel_after_slot("follow_poll_after_id", "follow_poll")
+        self._cancel_after_slot("follow_layout_after_id", "follow_layout")
+        self._cancel_after_slot("follow_canvas_redraw_after_id", "follow_canvas_redraw")
+        self._cancel_after_slot("follow_search_after_id", "follow_search")
+        self._cancel_after_slot("training_canvas_after_id", "training_canvas_refresh")
+        self._cancel_after_slot("training_note_reflow_after_id", "training_note_reflow")
+        self._cancel_after_slot("detail_scroll_after_id", "detail_scroll")
+        self._cancel_after_slot("follow_scroll_restore_after_id", "follow_scroll_restore")
+        for action_key in list(self.follow_action_after_ids.keys()):
+            self._cancel_follow_action_state_refresh(action_key)
+
+    def schedule_detail_scroll_update(self, delay_ms=1):
+        if not hasattr(self, "update_detail_scrollregion"):
+            return
+        self._schedule_after_slot(
+            "detail_scroll_after_id",
+            max(1, int(delay_ms)),
+            self.update_detail_scrollregion,
+            "detail_scroll",
+            require_visible=True,
+        )
+
+    def schedule_follow_search_apply(self, delay_ms=None):
+        if not hasattr(self, "search_entry") or self.search_entry is None:
+            return
+        try:
+            if not self.search_entry.winfo_exists():
+                return
+            self.follow_search_pending_query = self.search_entry.get().strip().lower()
+        except Exception:
+            return
+
+        self._schedule_after_slot(
+            "follow_search_after_id",
+            max(1, int(delay_ms or self.follow_search_debounce_ms)),
+            self._flush_follow_search_apply,
+            "follow_search",
+            require_visible=True,
+        )
+
+    def _flush_follow_search_apply(self):
+        if not self._can_run_page_job("follow_search_flush", require_visible=True):
+            return
+        if not hasattr(self, "search_entry") or self.search_entry is None or not self.search_entry.winfo_exists():
+            return
+
+        current_query = self.search_entry.get().strip().lower()
+        if current_query != getattr(self, "follow_search_pending_query", ""):
+            self.follow_search_pending_query = current_query
+            self.schedule_follow_search_apply(delay_ms=120)
+            return
+
+        if current_query == self.follow_search_last_applied_query:
+            return
+
+        self.apply_follow_search()
+
+    def schedule_follow_scroll_restore(self, canvas, target_yview):
+        def _restore():
+            try:
+                if canvas.winfo_exists():
+                    canvas.yview_moveto(target_yview)
+            except Exception as exc:
+                self._debug_job("follow_scroll_restore", f"restore_failed error={exc}")
+
+        self._schedule_after_slot(
+            "follow_scroll_restore_after_id",
+            1,
+            _restore,
+            "follow_scroll_restore",
+            require_visible=True,
+        )
+
     def destroy(self):
-        self.close_deadline_popup()
-        self.unbind_follow_mousewheel()
-        if self.follow_poll_after_id:
-            self.after_cancel(self.follow_poll_after_id)
-            self.follow_poll_after_id = None
-        if self.follow_layout_after_id:
-            try:
-                self.after_cancel(self.follow_layout_after_id)
-            except Exception:
-                pass
-            self.follow_layout_after_id = None
-        if self.follow_canvas_redraw_after_id:
-            try:
-                self.after_cancel(self.follow_canvas_redraw_after_id)
-            except Exception:
-                pass
-            self.follow_canvas_redraw_after_id = None
-        for after_id in list(self.follow_action_after_ids.values()):
-            if after_id:
-                try:
-                    self.after_cancel(after_id)
-                except Exception:
-                    pass
+        self.on_page_hide()
         self.follow_action_after_ids = {}
         super().destroy()
 
+    def _copy_task_section_state_value(self, value):
+        try:
+            return deepcopy(value)
+        except Exception:
+            return value
+
+    def _get_task_section_host(self, section_key):
+        host = self.task_section_hosts.get(section_key)
+        if host is not None and host.winfo_exists():
+            return host
+
+        host = ctk.CTkFrame(self.body_card, fg_color="transparent")
+        host.grid(row=0, column=0, sticky="nsew")
+        host.grid_columnconfigure(0, weight=1)
+        host.grid_rowconfigure(0, weight=1)
+        host.grid_remove()
+        self.task_section_hosts[section_key] = host
+        return host
+
+    def _hide_task_section_hosts(self):
+        for host in list(self.task_section_hosts.values()):
+            if host is None:
+                continue
+            try:
+                if host.winfo_exists():
+                    host.grid_remove()
+            except Exception:
+                continue
+
+    def _cache_task_section_context(self, section_key):
+        if section_key not in {"follow", "setup_training"}:
+            return
+
+        host = self.task_section_hosts.get(section_key)
+        if host is None or not host.winfo_exists():
+            return
+
+        self.task_section_widget_cache[section_key] = {
+            name: getattr(self, name, None)
+            for name in self.task_section_widget_names
+        }
+        self.task_section_state_cache[section_key] = {
+            name: self._copy_task_section_state_value(getattr(self, name, None))
+            for name in self.task_section_state_names
+        }
+
+    def _restore_task_section_context(self, section_key):
+        for name, value in self.task_section_widget_cache.get(section_key, {}).items():
+            setattr(self, name, value)
+        for name, value in self.task_section_state_cache.get(section_key, {}).items():
+            setattr(self, name, self._copy_task_section_state_value(value))
+
+    def _has_cached_task_section(self, section_key):
+        host = self.task_section_hosts.get(section_key)
+        return (
+            section_key in self.task_section_widget_cache
+            and host is not None
+            and host.winfo_exists()
+        )
+
     def render_section(self, section_key):
+        self._debug_job("render_section", f"switch_to={section_key}")
+        previous_section = self.rendered_section
+        if previous_section in {"follow", "setup_training"}:
+            self._cache_task_section_context(previous_section)
+        self._cancel_process_jobs(include_poll=True)
+        self.active_scroll_target = None
+        self.rendered_section = section_key
         section_map = {
             "report": ("Report", "Khu vuc nay se build function report task."),
             "follow": ("Follow", "Task Follow UI giu nguyen layout cu, chi doi data flow sang store."),
@@ -214,20 +540,49 @@ class ProcessPage(ctk.CTkFrame):
 
         if section_key in {"follow", "setup_training"}:
             self.current_task_section = section_key
-            self.selected_status = self.get_default_task_status()
 
         if section_key in {"follow", "setup_training"}:
             self.header_card.grid_remove()
+            self.bind_follow_mousewheel()
         else:
+            self.unbind_follow_mousewheel()
             self.header_card.grid()
             self.title_label.configure(text=title)
             self.subtitle_label.configure(text=subtitle)
 
+        host_widgets = {
+            host
+            for host in self.task_section_hosts.values()
+            if host is not None and host.winfo_exists()
+        }
         for widget in self.body_card.winfo_children():
+            if widget in host_widgets:
+                widget.grid_remove()
+                continue
             widget.destroy()
 
         if section_key in {"follow", "setup_training"}:
-            self.render_follow_ui()
+            host = self._get_task_section_host(section_key)
+            self._hide_task_section_hosts()
+            host.grid()
+            if self._has_cached_task_section(section_key):
+                self._restore_task_section_context(section_key)
+                self.update_follow_filter_controls()
+                self.update_follow_scope_hint()
+                self.update_follow_form_mode()
+                self.refresh_follow_action_button_states()
+                self.refresh_follow_tasks(keep_selection=True, force=False)
+                self.schedule_follow_layout_refresh(delay_ms=1)
+                self.schedule_detail_scroll_update()
+                if (
+                    self.follow_poll_after_id is None
+                    and self.follow_controller.should_poll_follow_events()
+                ):
+                    self.poll_follow_store_events()
+            else:
+                self.selected_status = self.get_default_task_status()
+                self.render_follow_ui(host=host)
+                self._cache_task_section_context(section_key)
             return
 
         report_page = TaskReportPage(
@@ -241,6 +596,92 @@ class ProcessPage(ctk.CTkFrame):
             border_soft=self.BORDER_SOFT,
         )
         report_page.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
+
+    def on_page_resume(self, initial_section=None, initial_task_id=None):
+        target_section = initial_section or self.rendered_section or self.initial_section or "report"
+        already_visible = False
+        try:
+            already_visible = bool(self.winfo_exists()) and bool(self.winfo_ismapped())
+        except Exception:
+            already_visible = False
+
+        if (
+            self.page_active
+            and already_visible
+            and initial_task_id in (None, "")
+            and target_section == self.rendered_section
+        ):
+            self._debug_job("page_resume", f"noop section={target_section} task_id={initial_task_id}")
+            return
+
+        self.page_active = True
+        self._debug_job("page_resume", f"section={initial_section} task_id={initial_task_id}")
+
+        if initial_task_id not in (None, ""):
+            try:
+                self.pending_focus_task_id = int(initial_task_id)
+                self.follow_show_all = True
+            except Exception:
+                self.pending_focus_task_id = None
+
+        if target_section != self.rendered_section:
+            self.render_section(target_section)
+            return
+
+        if target_section in {"follow", "setup_training"}:
+            self.bind_follow_mousewheel()
+            self.follow_layout_applied_size = (0, 0)
+            self.refresh_follow_tasks(keep_selection=True, force=False)
+            self.schedule_follow_layout_refresh(delay_ms=1)
+            self.schedule_detail_scroll_update()
+            if (
+                self.follow_poll_after_id is None
+                and self.follow_controller.should_poll_follow_events()
+            ):
+                self.poll_follow_store_events()
+            if self.pending_focus_task_id is not None:
+                self.refresh_follow_tasks(keep_selection=True, force=True)
+
+    def on_page_hide(self):
+        self.page_active = False
+        self._debug_job("page_hide", "sleep")
+        self.close_deadline_popup()
+        self.unbind_follow_mousewheel()
+        self._cancel_process_jobs(include_poll=True)
+
+    def _on_page_map(self, event=None):
+        if event is not None and getattr(event, "widget", None) is not self:
+            return
+        if not self.page_active:
+            return
+        if self.rendered_section not in {"follow", "setup_training"}:
+            return
+        if not hasattr(self, "follow_wrap") or self.follow_wrap is None or not self.follow_wrap.winfo_exists():
+            return
+
+        try:
+            current_size = (
+                int(self.follow_wrap.winfo_width()),
+                int(self.follow_wrap.winfo_height()),
+            )
+        except Exception:
+            current_size = (0, 0)
+
+        if current_size[0] > 1 and current_size[1] > 1 and current_size == self.follow_layout_applied_size:
+            self._debug_job("page_map", f"skip_same_size section={self.rendered_section} size={current_size}")
+            return
+
+        self._debug_job("page_map", f"visible section={self.rendered_section}")
+        if current_size[0] > 1 and current_size[1] > 1:
+            self.follow_layout_pending_size = current_size
+        self.follow_layout_applied_size = (0, 0)
+        self.schedule_follow_layout_refresh(delay_ms=1)
+        self.schedule_detail_scroll_update()
+        if (
+            self.follow_poll_after_id is None
+            and self.follow_controller.should_poll_follow_events()
+        ):
+            self.poll_follow_store_events()
 
     def render_placeholder(self, title):
         content = ctk.CTkFrame(
@@ -296,15 +737,11 @@ class ProcessPage(ctk.CTkFrame):
             pass
 
     def _schedule_follow_action_state_refresh(self, action_key):
-        existing_after_id = self.follow_action_after_ids.get(action_key)
-        if existing_after_id:
-            try:
-                self.after_cancel(existing_after_id)
-            except Exception:
-                pass
+        self._cancel_follow_action_state_refresh(action_key)
 
         if action_key in self.follow_action_inflight:
             self.follow_action_after_ids[action_key] = None
+            self._debug_job(f"follow_action:{action_key}", "skip_schedule inflight")
             return
 
         remaining_ms = int(
@@ -312,10 +749,32 @@ class ProcessPage(ctk.CTkFrame):
         )
         if remaining_ms <= 0:
             self.follow_action_after_ids[action_key] = None
+            self._debug_job(f"follow_action:{action_key}", "cooldown_complete immediate")
             self.update_follow_form_mode()
             return
 
-        self.follow_action_after_ids[action_key] = self.after(remaining_ms, self.update_follow_form_mode)
+        job_ref = {}
+
+        def _wrapped():
+            scheduled_id = job_ref.get("id")
+            if self.follow_action_after_ids.get(action_key) != scheduled_id:
+                self._debug_job(
+                    f"follow_action:{action_key}",
+                    f"skip_stale id={scheduled_id} current={self.follow_action_after_ids.get(action_key)}",
+                )
+                return
+            self.follow_action_after_ids[action_key] = None
+            self._debug_job(f"follow_action:{action_key}", f"callback id={scheduled_id}")
+            if not self._can_run_page_job(f"follow_action:{action_key}", require_visible=False):
+                return
+            self.update_follow_form_mode()
+
+        job_ref["id"] = self.after(remaining_ms, _wrapped)
+        self.follow_action_after_ids[action_key] = job_ref["id"]
+        self._debug_job(
+            f"follow_action:{action_key}",
+            f"schedule id={job_ref['id']} delay_ms={remaining_ms}",
+        )
 
     def _start_follow_action(self, action_key):
         if self._follow_action_is_locked(action_key):
@@ -451,6 +910,8 @@ class ProcessPage(ctk.CTkFrame):
         self.confirmed_deadline_date = self.pending_deadline_date
         self.confirmed_deadline_time = selected_time
         target_button = getattr(self, "deadline_target_button", None)
+        popup_target_button = getattr(self, "popup_deadline_picker_button", None)
+        is_popup_target = target_button is not None and popup_target_button is not None and target_button == popup_target_button
         if target_button is not None and target_button == getattr(self, "popup_deadline_picker_button", None):
             self.update_popup_deadline_button_text()
         else:
@@ -458,11 +919,7 @@ class ProcessPage(ctk.CTkFrame):
         self.close_deadline_popup()
 
         if self.get_confirmed_deadline_signature() != previous_signature:
-            if (
-                getattr(self, "deadline_target_button", None) is not None
-                and getattr(self, "popup_deadline_picker_button", None) is not None
-                and self.deadline_target_button == self.popup_deadline_picker_button
-            ):
+            if is_popup_target:
                 deadline_date, deadline_time, deadline_period = self.get_confirmed_deadline_parts()
                 if self.current_username and deadline_date and deadline_time and deadline_period in {"AM", "PM"}:
                     self.store.load_handoff_options(
@@ -471,6 +928,8 @@ class ProcessPage(ctk.CTkFrame):
                         task_time=deadline_time,
                         task_period=deadline_period,
                     )
+                    if self.follow_poll_after_id is None:
+                        self.poll_follow_store_events()
             else:
                 self.refresh_handoff_options_from_deadline()
 
@@ -537,16 +996,27 @@ class ProcessPage(ctk.CTkFrame):
         root = self.winfo_toplevel()
         if self.follow_mousewheel_bind_id is None and root is not None:
             self.follow_mousewheel_bind_id = root.bind("<MouseWheel>", self.on_global_mousewheel, add="+")
-            root.bind("<Button-1>", self.on_global_click, add="+")
+            self._debug_job("follow_mousewheel", f"bind_mousewheel id={self.follow_mousewheel_bind_id}")
+        if self.follow_click_bind_id is None and root is not None:
+            self.follow_click_bind_id = root.bind("<Button-1>", self.on_global_click, add="+")
+            self._debug_job("follow_mousewheel", f"bind_click id={self.follow_click_bind_id}")
 
     def unbind_follow_mousewheel(self):
         root = self.winfo_toplevel()
         if self.follow_mousewheel_bind_id is not None and root is not None:
             try:
                 root.unbind("<MouseWheel>", self.follow_mousewheel_bind_id)
+                self._debug_job("follow_mousewheel", f"unbind_mousewheel id={self.follow_mousewheel_bind_id}")
             except Exception:
                 pass
             self.follow_mousewheel_bind_id = None
+        if self.follow_click_bind_id is not None and root is not None:
+            try:
+                root.unbind("<Button-1>", self.follow_click_bind_id)
+                self._debug_job("follow_mousewheel", f"unbind_click id={self.follow_click_bind_id}")
+            except Exception:
+                pass
+            self.follow_click_bind_id = None
 
     def on_global_click(self, event=None):
         if self.deadline_popup_frame is None or not self.deadline_popup_frame.winfo_exists():
@@ -597,6 +1067,41 @@ class ProcessPage(ctk.CTkFrame):
     def clear_active_scroll_target(self, target):
         self.ui_handler.clear_active_scroll_target(target)
 
+    def get_follow_board_visible_range(self):
+        if self.is_setup_training_section():
+            return tuple(getattr(self, "training_visible_range", (0, 100)) or (0, 100))
+        return tuple(getattr(self, "follow_visible_range", (0, 100)) or (0, 100))
+
+    def set_follow_board_visible_range(self, visible_range):
+        start, end = visible_range or (0, 0)
+        try:
+            start = max(0, int(start))
+        except Exception:
+            start = 0
+        try:
+            end = max(start, int(end))
+        except Exception:
+            end = start
+        normalized_range = (start, end)
+        if self.is_setup_training_section():
+            self.training_visible_range = normalized_range
+        else:
+            self.follow_visible_range = normalized_range
+        return normalized_range
+
+    def reset_follow_board_visible_range(self):
+        return self.set_follow_board_visible_range((0, 100))
+
+    def on_follow_canvas_scrollbar(self, *args):
+        if hasattr(self, "follow_canvas") and self.follow_canvas is not None:
+            self.follow_canvas.yview(*args)
+        self.follow_controller.on_follow_board_view_changed()
+
+    def on_follow_canvas_yscroll(self, first, last):
+        if hasattr(self, "follow_scrollbar") and self.follow_scrollbar is not None:
+            self.follow_scrollbar.set(first, last)
+        self.follow_controller.on_follow_board_view_changed()
+
     def on_global_mousewheel(self, event):
         target = getattr(self, "active_scroll_target", None)
         if target == "detail" and hasattr(self, "detail_canvas"):
@@ -616,6 +1121,7 @@ class ProcessPage(ctk.CTkFrame):
             and getattr(self, "follow_board_scroll_enabled", False)
         ):
             self.follow_canvas.yview_scroll(-int(event.delta / 120), "units")
+            self.follow_controller.on_follow_board_view_changed()
 
     def on_follow_canvas_xscroll(self, *args):
         if hasattr(self, "follow_canvas"):
@@ -632,6 +1138,8 @@ class ProcessPage(ctk.CTkFrame):
         self.update_detail_scrollregion()
 
     def update_detail_scrollregion(self):
+        if not self._can_run_page_job("detail_scrollregion", require_visible=True):
+            return
         if hasattr(self, "detail_canvas"):
             bbox = self.detail_canvas.bbox("all")
             if bbox is not None:
@@ -657,18 +1165,23 @@ class ProcessPage(ctk.CTkFrame):
     def on_follow_wrap_configure(self, _event=None):
         self.ui_handler.on_follow_wrap_configure(_event)
 
-    def schedule_follow_layout_refresh(self, width=None, height=None, delay_ms=90):
+    def schedule_follow_layout_refresh(self, width=None, height=None, delay_ms=24):
         self.follow_layout_pending_size = (width, height)
-        if self.follow_layout_after_id:
-            try:
-                self.after_cancel(self.follow_layout_after_id)
-            except Exception:
-                pass
-        self.follow_layout_after_id = self.after(delay_ms, self._flush_follow_layout_refresh)
+        if not self.page_active:
+            self._debug_job("follow_layout", "skip_schedule inactive")
+            return
+        self._schedule_after_slot(
+            "follow_layout_after_id",
+            max(1, int(delay_ms)),
+            self._flush_follow_layout_refresh,
+            "follow_layout",
+            require_visible=True,
+        )
 
     def _flush_follow_layout_refresh(self):
-        self.follow_layout_after_id = None
-        if not hasattr(self, "follow_wrap"):
+        if not self._can_run_page_job("follow_layout_flush", require_visible=True):
+            return
+        if not hasattr(self, "follow_wrap") or not self.follow_wrap.winfo_exists():
             return
 
         pending_width, pending_height = self.follow_layout_pending_size or (None, None)
@@ -683,15 +1196,24 @@ class ProcessPage(ctk.CTkFrame):
 
         self.follow_layout_applied_size = new_size
         self.refresh_follow_layout()
+        if (
+            self.rendered_section in {"follow", "setup_training"}
+            and self.follow_poll_after_id is None
+            and self.follow_controller.should_poll_follow_events()
+        ):
+            self.poll_follow_store_events()
         if hasattr(self, "update_detail_scrollregion"):
-            self.after_idle(self.update_detail_scrollregion)
-        self.schedule_follow_canvas_redraw(for_resize=True)
-
-    def schedule_follow_canvas_redraw(self, delay_ms=1, for_resize=False):
-        if not hasattr(self, "follow_canvas"):
+            self.schedule_detail_scroll_update()
+    def schedule_follow_canvas_redraw(self, delay_ms=1, for_resize=False, force=False):
+        if not hasattr(self, "follow_canvas") or not self.page_active:
+            if not self.page_active:
+                self._debug_job("follow_canvas_redraw", "skip_schedule inactive")
             return
 
-        if for_resize:
+        if force:
+            self.follow_canvas_force_redraw = True
+
+        if for_resize and not force:
             try:
                 current_size = (
                     int(self.follow_canvas.winfo_width()),
@@ -700,24 +1222,27 @@ class ProcessPage(ctk.CTkFrame):
             except Exception:
                 current_size = (0, 0)
             last_size = getattr(self, "follow_canvas_last_render_size", (0, 0))
-            width_delta = abs(current_size[0] - last_size[0])
-            height_delta = abs(current_size[1] - last_size[1])
-            if width_delta < 120 and height_delta < 80:
+            if current_size == last_size:
+                self._debug_job("follow_canvas_redraw", f"skip_resize size={current_size}")
                 return
-            delay_ms = max(delay_ms, 220)
+            delay_ms = max(delay_ms, 60)
 
-        if self.follow_canvas_redraw_after_id:
-            try:
-                self.after_cancel(self.follow_canvas_redraw_after_id)
-            except Exception:
-                pass
-        self.follow_canvas_redraw_after_id = self.after(delay_ms, self._flush_follow_canvas_redraw)
+        self._schedule_after_slot(
+            "follow_canvas_redraw_after_id",
+            max(1, int(delay_ms)),
+            self._flush_follow_canvas_redraw,
+            "follow_canvas_redraw",
+            require_visible=True,
+        )
 
     def _flush_follow_canvas_redraw(self):
-        self.follow_canvas_redraw_after_id = None
-        if not hasattr(self, "follow_canvas"):
+        if not self._can_run_page_job("follow_canvas_redraw_flush", require_visible=True):
             return
-        self.redraw_follow_canvas()
+        if not hasattr(self, "follow_canvas") or not self.follow_canvas.winfo_exists():
+            return
+        force_redraw = bool(getattr(self, "follow_canvas_force_redraw", False))
+        self.follow_canvas_force_redraw = False
+        self.redraw_follow_canvas(force=force_redraw)
 
     def set_entry_value(self, entry, value):
         entry.delete(0, "end")
@@ -834,8 +1359,8 @@ class ProcessPage(ctk.CTkFrame):
 
     # Follow delegates
 
-    def render_follow_ui(self):
-        return self.follow_controller.render_follow_ui()
+    def render_follow_ui(self, host=None):
+        return self.follow_controller.render_follow_ui(parent_host=host)
 
     def select_status(self, status_name):
         return self.follow_controller.select_status(status_name)
@@ -920,8 +1445,8 @@ class ProcessPage(ctk.CTkFrame):
     def get_section_filtered_tasks(self, query=""):
         return self.follow_controller.get_section_filtered_tasks(query)
 
-    def redraw_follow_canvas(self):
-        return self.follow_controller.redraw_follow_canvas()
+    def redraw_follow_canvas(self, force=False):
+        return self.follow_controller.redraw_follow_canvas(force=force)
 
     def update_follow_board_height(self, content_height):
         return self.follow_controller.update_follow_board_height(content_height)

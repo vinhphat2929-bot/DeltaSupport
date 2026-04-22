@@ -161,8 +161,73 @@ class TechSchedulePage(ctk.CTkFrame):
         self.pad_x        = 20
         self.pad_y        = 20
         self.radius       = 10
+        self.resize_render_after_id = None
+        self.pending_resize_render_force = False
+        self.last_rendered_col_widths = None
+        self.page_active = True
+        self.debug_background_jobs = False
 
         self._build_ui()
+
+    def _debug_job(self, label, message):
+        if not getattr(self, "debug_background_jobs", False):
+            return
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        print(f"[{timestamp}] [TechSchedulePage] {label} | {message}")
+
+    def _can_run_page_job(self, label, require_visible=True):
+        exists = False
+        visible = False
+        try:
+            exists = bool(self.winfo_exists())
+        except Exception:
+            exists = False
+        active = bool(getattr(self, "page_active", False))
+        if exists:
+            try:
+                visible = bool(self.winfo_ismapped())
+            except Exception:
+                visible = False
+
+        allowed = exists and active and (visible if require_visible else True)
+        if not allowed:
+            self._debug_job(
+                label,
+                f"skip exists={exists} active={active} visible={visible} require_visible={require_visible}",
+            )
+        return allowed
+
+    def _cancel_after_slot(self, slot_name, label):
+        after_id = getattr(self, slot_name, None)
+        if not after_id:
+            return False
+        try:
+            self.after_cancel(after_id)
+            self._debug_job(label, f"cancel id={after_id}")
+        except Exception as exc:
+            self._debug_job(label, f"cancel_failed id={after_id} error={exc}")
+        setattr(self, slot_name, None)
+        return True
+
+    def _schedule_after_slot(self, slot_name, delay_ms, callback, label, require_visible=True):
+        self._cancel_after_slot(slot_name, label)
+        job_ref = {}
+
+        def _wrapped():
+            scheduled_id = job_ref.get("id")
+            if getattr(self, slot_name, None) != scheduled_id:
+                self._debug_job(label, f"skip_stale id={scheduled_id} current={getattr(self, slot_name, None)}")
+                return
+            setattr(self, slot_name, None)
+            self._debug_job(label, f"callback id={scheduled_id}")
+            if not self._can_run_page_job(label, require_visible=require_visible):
+                return
+            callback()
+
+        job_ref["id"] = self.after(delay_ms, _wrapped)
+        setattr(self, slot_name, job_ref["id"])
+        self._debug_job(label, f"schedule id={job_ref['id']} delay_ms={delay_ms}")
+        return job_ref["id"]
 
     # =========================================================
     # PERMISSION
@@ -487,7 +552,39 @@ class TechSchedulePage(ctk.CTkFrame):
         """Khi canvas resize, tính lại col widths để fit."""
         if not self.schedule_data:
             return
+        self._schedule_resize_render()
+
+    def _schedule_resize_render(self, force=False):
+        if not self.schedule_data:
+            return
+
+        self.pending_resize_render_force = self.pending_resize_render_force or force
+        if not self.page_active:
+            self._debug_job("resize_render", "skip_schedule inactive")
+            return
+        self._schedule_after_slot(
+            "resize_render_after_id",
+            90,
+            self._flush_resize_render,
+            "resize_render",
+            require_visible=True,
+        )
+
+    def _flush_resize_render(self):
+        if not self._can_run_page_job("resize_render_flush", require_visible=True):
+            self.pending_resize_render_force = False
+            return
+        if not self.schedule_data:
+            self.pending_resize_render_force = False
+            return
+
+        force = self.pending_resize_render_force
+        self.pending_resize_render_force = False
+
         self._recalc_col_widths()
+        current_widths = (self.col_employee, self.col_time, self.col_day)
+        if not force and current_widths == self.last_rendered_col_widths:
+            return
         self._render_schedule()
 
     def _recalc_col_widths(self):
@@ -811,6 +908,7 @@ class TechSchedulePage(ctk.CTkFrame):
 
         if not self.schedule_data:
             self._show_empty_state()
+            self.last_rendered_col_widths = None
             return
 
         # Group by shift
@@ -984,3 +1082,22 @@ class TechSchedulePage(ctk.CTkFrame):
 
         # Cập nhật scroll region
         self.tk_canvas.configure(scrollregion=(0, 0, max(total_w + 40, self.tk_canvas.winfo_width()), y + 30))
+        self.last_rendered_col_widths = (self.col_employee, self.col_time, self.col_day)
+
+    def on_page_resume(self):
+        self.page_active = True
+        self._debug_job("page_resume", "wake")
+        self._close_popup()
+        if self.schedule_data:
+            self._schedule_resize_render(force=True)
+
+    def on_page_hide(self):
+        self.page_active = False
+        self._debug_job("page_hide", "sleep")
+        self._close_popup()
+        self._cancel_after_slot("resize_render_after_id", "resize_render")
+        self.pending_resize_render_force = False
+
+    def destroy(self):
+        self.on_page_hide()
+        super().destroy()

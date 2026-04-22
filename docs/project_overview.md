@@ -23,6 +23,22 @@ Chức năng chính:
 main.py  ←  Chạy lệnh: python main.py
 ```
 
+### API endpoint / network config
+- Desktop app doc `API_BASE_URL` tu `services/app_config.py`.
+- Thu tu uu tien cau hinh:
+  1. Bien moi truong `DELTA_API_BASE_URL`
+  2. File config `data/app_config.json`
+  3. Gia tri mac dinh `http://127.0.0.1:8000`
+- Cau hinh hien tai da ho tro che do `auto`:
+  - Neu `api_base_url = "auto"` thi app se thu lan luot candidate URL va chon server tra ve JSON root `{"status": "API OK"}`
+  - Thu tu candidate dang dung: LAN `http://192.168.80.110:8000` -> Tailscale `http://100.111.27.65:8000` -> localhost `http://127.0.0.1:8000`
+- Neu can fix cung 1 endpoint, van co the set truc tiep `DELTA_API_BASE_URL` hoac `api_base_url` trong file config.
+- Luu y van hanh:
+  - Backend phai bind `0.0.0.0:8000`, khong chi `127.0.0.1`
+  - Firewall tren may chu phai mo port `8000`
+  - May dung ben ngoai phai dang nhap cung tailnet Tailscale
+- Neu can doi endpoint theo moi truong, uu tien sua config/env, khong hardcode lai trong tung service.
+
 ### Các module lớn
 | Module | Vai trò |
 |--------|---------|
@@ -310,9 +326,16 @@ DeltaSupport/
 ### 🔵 `services/auth_service.py`
 | Thuộc tính | Chi tiết |
 |-----------|---------|
-| **Làm gì** | Xác thực, lưu token, định nghĩa `API_BASE_URL` — biến này **cực kỳ quan trọng** |
-| **Gọi từ** | Hầu hết mọi service khác |
-| **Rủi ro khi sửa** | 🔴 **Cao** — sửa API_BASE_URL là mọi API đều hỏng |
+| **Làm gì** | Xác thực, PIN flow, gọi cac auth endpoint |
+| **Gọi từ** | Login page, PIN dialog, cac luong auth |
+| **Rủi ro khi sửa** | 🔴 **Cao** — sua sai de loi login / PIN flow |
+
+### 🔵 `services/app_config.py`
+| Thuộc tính | Chi tiết |
+|-----------|---------|
+| **Làm gì** | Resolve `API_BASE_URL` tu env/config/default, ho tro che do `auto` va probe LAN/Tailscale/local server — diem cau hinh API trung tam cua desktop app |
+| **Gọi từ** | Hau het service HTTP |
+| **Rủi ro khi sửa** | 🔴 **Cao** — sua sai la moi API deu hong hoac tro sai server |
 
 ---
 
@@ -424,7 +447,7 @@ DeltaSupport/
 |------|----------------|
 | `main.py` | Entry point — sửa sai app không chạy được |
 | `main_app.py` | Shell toàn app — routing, navbar, polling |
-| `services/auth_service.py` | Chứa `API_BASE_URL` — sửa sai = mọi API đều hỏng |
+| `services/app_config.py` | Chua cau hinh `API_BASE_URL` — sua sai = moi API deu hong |
 | `stores/base_store.py` | Threading lock — sửa sai = race condition, crash ngẫu nhiên |
 | `stores/task_store.py` | State task — sửa sai = mất data optimistic, crash |
 

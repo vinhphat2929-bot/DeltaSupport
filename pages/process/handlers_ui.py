@@ -12,25 +12,15 @@ class ProcessUIHandler:
 
     def apply_follow_search(self):
         query = self.page.search_entry.get().strip().lower()
-        self.page.filtered_follow_tasks = self.page.get_section_filtered_tasks(query)
-        self.page.redraw_follow_canvas()
-
-        if not self.page.filtered_follow_tasks:
-            self.page.clear_follow_form()
-            return
-
-        if self.page.active_task:
-            active_task_id = self.page.active_task.get("task_id")
-            for task in self.page.filtered_follow_tasks:
-                if task.get("task_id") == active_task_id:
-                    return
-
-        if self.page.filtered_follow_tasks:
-            self.page.load_task_detail(self.page.filtered_follow_tasks[0].get("task_id"))
+        self.page.follow_search_pending_query = query
+        self.page.follow_search_last_applied_query = query
+        self.page.refresh_follow_tasks(search_text=query, keep_selection=True, force=False)
 
     def clear_follow_search(self):
         self.page.search_entry.delete(0, "end")
-        self.apply_follow_search()
+        self.page.follow_search_pending_query = ""
+        self.page.follow_search_last_applied_query = ""
+        self.page.refresh_follow_tasks(search_text="", keep_selection=True, force=False)
 
     def toggle_show_all_tasks(self):
         self.page.follow_show_all = not self.page.follow_show_all
@@ -217,7 +207,7 @@ class ProcessUIHandler:
     def on_follow_wrap_configure(self, event):
         event_width = getattr(event, "width", None)
         event_height = getattr(event, "height", None)
-        self.page.schedule_follow_layout_refresh(width=event_width, height=event_height)
+        self.page.schedule_follow_layout_refresh(width=event_width, height=event_height, delay_ms=24)
 
     def open_setup_training_from_follow(self):
         if not self.page.active_task or not self.page.active_task.get("task_id"):

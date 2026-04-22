@@ -1,5 +1,4 @@
 import threading
-import threading
 import time
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -15,6 +14,7 @@ class TaskStore(BaseStore):
         self.handoff_options = [{"username": "", "display_name": "Tech Team", "type": "TEAM"}]
         self.current_display_name = ""
         self.search_scope = "board"
+        self.search_text = ""
         self.show_all = False
         self.include_done = False
         self._view_cache = {}
@@ -22,9 +22,20 @@ class TaskStore(BaseStore):
         self._handoff_cache = {}
         self._handoff_loading_keys = set()
         self._last_handoff_key = None
+        self._detail_loading_ids = set()
+        self._active_load_request = None
+        self._pending_load_request = None
+        self._latest_requested_load = None
 
-    def _view_key(self, show_all=None, include_done=None):
-        return (bool(self.show_all if show_all is None else show_all), bool(self.include_done if include_done is None else include_done))
+    def _normalize_search_text(self, search_text):
+        return str(search_text or "").strip().lower()
+
+    def _view_key(self, show_all=None, include_done=None, search_text=None):
+        return (
+            bool(self.show_all if show_all is None else show_all),
+            bool(self.include_done if include_done is None else include_done),
+            self._normalize_search_text(self.search_text if search_text is None else search_text),
+        )
 
     def _handoff_request_key(self, action_by, task_date="", task_time="", task_period=""):
         return (
@@ -35,21 +46,24 @@ class TaskStore(BaseStore):
         )
 
     def _snapshot_state(self):
-        return {
-            "items_by_id": deepcopy(self.items_by_id),
-            "ordered_ids": list(self.ordered_ids),
-            "last_loaded_at": self.last_loaded_at,
-            "is_loaded": self.is_loaded,
-            "search_scope": self.search_scope,
-        }
+        with self._lock:
+            return {
+                "items_by_id": dict(self.items_by_id),
+                "ordered_ids": list(self.ordered_ids),
+                "last_loaded_at": self.last_loaded_at,
+                "is_loaded": self.is_loaded,
+                "search_scope": self.search_scope,
+                "search_text": self.search_text,
+            }
 
     def _apply_snapshot(self, snapshot):
         with self._lock:
-            self.items_by_id = deepcopy(snapshot.get("items_by_id", {}))
+            self.items_by_id = dict(snapshot.get("items_by_id", {}))
             self.ordered_ids = list(snapshot.get("ordered_ids", []))
             self.last_loaded_at = snapshot.get("last_loaded_at")
             self.is_loaded = bool(snapshot.get("is_loaded"))
             self.search_scope = snapshot.get("search_scope", "board")
+            self.search_text = self._normalize_search_text(snapshot.get("search_text", ""))
             self.is_loading = False
 
     def _save_active_snapshot(self):
@@ -62,10 +76,11 @@ class TaskStore(BaseStore):
         loaded_at = snapshot.get("last_loaded_at")
         return bool(loaded_at and datetime.now() - loaded_at <= self.ttl)
 
-    def set_view(self, show_all=False, include_done=False):
-        key = self._view_key(show_all, include_done)
+    def set_view(self, show_all=False, include_done=False, search_text=""):
+        key = self._view_key(show_all, include_done, search_text)
         self.show_all = bool(show_all)
         self.include_done = bool(include_done)
+        self.search_text = self._normalize_search_text(search_text)
         snapshot = self._view_cache.get(key)
         if snapshot:
             self._apply_snapshot(snapshot)
@@ -77,13 +92,18 @@ class TaskStore(BaseStore):
     def load(self, action_by, force=False, background_if_stale=True):
         key = self._view_key()
         snapshot = self._view_cache.get(key)
+        with self._lock:
+            current_loading = bool(self.is_loading)
+            self._latest_requested_load = (action_by, key)
         if snapshot:
             self._apply_snapshot(snapshot)
+            if current_loading:
+                with self._lock:
+                    self.is_loading = True
 
         if not force and self._cache_valid_for(key):
             self.push_event(
                 "tasks_loaded",
-                items=self.get_all(),
                 search_scope=self.search_scope,
                 source="cache",
             )
@@ -92,45 +112,87 @@ class TaskStore(BaseStore):
         if snapshot and background_if_stale and not force:
             self.push_event(
                 "tasks_loaded",
-                items=self.get_all(),
                 search_scope=self.search_scope,
                 source="cache-stale",
             )
 
-        if self.is_loading:
-            return
-
         with self._lock:
+            request = (action_by, key)
+            self._latest_requested_load = request
+            if self.is_loading:
+                self._pending_load_request = request
+                return
             self.is_loading = True
+            self._active_load_request = request
         self.push_event("tasks_loading", show_all=self.show_all, include_done=self.include_done)
         threading.Thread(target=self._load_worker, args=(action_by, key), daemon=True).start()
 
     def _load_worker(self, action_by, view_key):
+        request = (action_by, view_key)
         result = self.service.get_tasks(
             action_by=action_by,
             show_all=view_key[0],
             include_done=view_key[1],
+            search_text=view_key[2],
         )
         if not result.get("success"):
             with self._lock:
-                self.is_loading = False
-            self.push_event("tasks_load_failed", message=result.get("message", "Unable to load tasks."))
+                should_emit_failure = self._latest_requested_load == request
+            if should_emit_failure:
+                self.push_event("tasks_load_failed", message=result.get("message", "Unable to load tasks."))
+            self._finish_load_request(request)
             return
 
         items = result.get("data", [])
+        loaded_at = datetime.now()
+        snapshot = {
+            "items_by_id": {item["task_id"]: item for item in items if item.get("task_id") is not None},
+            "ordered_ids": [item["task_id"] for item in items if item.get("task_id") is not None],
+            "last_loaded_at": loaded_at,
+            "is_loaded": True,
+            "search_scope": result.get("search_scope", "board"),
+            "search_text": self._normalize_search_text(view_key[2]),
+        }
         with self._lock:
-            self.items_by_id = {item["task_id"]: deepcopy(item) for item in items if item.get("task_id") is not None}
-            self.ordered_ids = [item["task_id"] for item in items if item.get("task_id") is not None]
-            self.search_scope = result.get("search_scope", "board")
-            self.mark_loaded()
-            self._save_active_snapshot()
+            self._view_cache[view_key] = snapshot
+            should_apply = self._latest_requested_load == request
+            if should_apply:
+                self.items_by_id = dict(snapshot["items_by_id"])
+                self.ordered_ids = list(snapshot["ordered_ids"])
+                self.last_loaded_at = loaded_at
+                self.is_loaded = True
+                self.search_scope = snapshot["search_scope"]
+                self.search_text = snapshot["search_text"]
 
-        self.push_event(
-            "tasks_loaded",
-            items=self.get_all(),
-            search_scope=self.search_scope,
-            source="network",
-        )
+        if should_apply:
+            self.push_event(
+                "tasks_loaded",
+                search_scope=snapshot["search_scope"],
+                source="network",
+            )
+        self._finish_load_request(request)
+
+    def _finish_load_request(self, request):
+        next_request = None
+        with self._lock:
+            pending_request = self._pending_load_request
+            if pending_request and pending_request != request:
+                next_request = pending_request
+                self._pending_load_request = None
+                self._active_load_request = next_request
+                self.is_loading = True
+            else:
+                if pending_request == request:
+                    self._pending_load_request = None
+                self._active_load_request = None
+                self.is_loading = False
+
+        if next_request:
+            threading.Thread(
+                target=self._load_worker,
+                args=(next_request[0], next_request[1]),
+                daemon=True,
+            ).start()
 
     def load_handoff_options(self, action_by, task_date="", task_time="", task_period=""):
         key = self._handoff_request_key(action_by, task_date, task_time, task_period)
@@ -186,26 +248,35 @@ class TaskStore(BaseStore):
         finally:
             self._handoff_loading_keys.discard(key)
 
-    def filter_local(self, query):
-        keyword = str(query or "").strip().lower()
-        items = self.get_all()
+    def _build_search_haystack(self, item):
+        return " ".join(
+            [
+                str(item.get("merchant_raw", "")),
+                str(item.get("merchant_name", "")),
+                str(item.get("phone", "")),
+                str(item.get("tracking_number", "")),
+                str(item.get("problem", "")),
+                str(item.get("handoff_to", "")),
+                str(item.get("status", "")),
+            ]
+        ).lower()
+
+    def _task_matches_search(self, item, search_text=None):
+        keyword = self._normalize_search_text(self.search_text if search_text is None else search_text)
         if not keyword:
-            return items
+            return True
+        return keyword in self._build_search_haystack(item or {})
+
+    def filter_local(self, query):
+        keyword = self._normalize_search_text(query)
+        with self._lock:
+            items = [self.items_by_id[item_id] for item_id in self.ordered_ids if item_id in self.items_by_id]
+        if not keyword or keyword == self.search_text:
+            return list(items)
 
         filtered = []
         for item in items:
-            haystack = " ".join(
-                [
-                    str(item.get("merchant_raw", "")),
-                    str(item.get("merchant_name", "")),
-                    str(item.get("phone", "")),
-                    str(item.get("tracking_number", "")),
-                    str(item.get("problem", "")),
-                    str(item.get("handoff_to", "")),
-                    str(item.get("status", "")),
-                ]
-            ).lower()
-            if keyword in haystack:
+            if self._task_matches_search(item, keyword):
                 filtered.append(item)
         return filtered
 
@@ -225,18 +296,26 @@ class TaskStore(BaseStore):
                 self.push_event("task_detail_loaded", item=item)
             return
 
+        with self._lock:
+            if task_id in self._detail_loading_ids:
+                return
+            self._detail_loading_ids.add(task_id)
         threading.Thread(target=self._detail_worker, args=(task_id, action_by), daemon=True).start()
 
     def _detail_worker(self, task_id, action_by):
-        result = self.service.get_task_detail(task_id, action_by=action_by)
-        if not result.get("success"):
-            self.push_event("task_detail_failed", task_id=task_id, message=result.get("message", "Unable to load task detail."))
-            return
+        try:
+            result = self.service.get_task_detail(task_id, action_by=action_by)
+            if not result.get("success"):
+                self.push_event("task_detail_failed", task_id=task_id, message=result.get("message", "Unable to load task detail."))
+                return
 
-        item = result.get("data")
-        self.upsert_one(item)
-        self._save_active_snapshot()
-        self.push_event("task_detail_loaded", item=self.get_by_id(task_id))
+            item = result.get("data")
+            self.upsert_one(item)
+            self._save_active_snapshot()
+            self.push_event("task_detail_loaded", item=self.get_by_id(task_id))
+        finally:
+            with self._lock:
+                self._detail_loading_ids.discard(task_id)
 
     def _task_matches_current_view(self, item):
         if not item:
@@ -250,7 +329,7 @@ class TaskStore(BaseStore):
         if not self.include_done and item.get("status") == "DONE":
             return False
 
-        return True
+        return self._task_matches_search(item)
 
     def _is_in_board_window(self, deadline_date_text):
         text = str(deadline_date_text or "").strip()
@@ -314,6 +393,7 @@ class TaskStore(BaseStore):
                 "deadline_period": payload.get("deadline_period", source.get("deadline_period", "AM")),
                 "note": payload.get("note", source.get("note", "")),
                 "training_form": deepcopy(payload.get("training_form", source.get("training_form", []))),
+                "has_training_form": bool(payload.get("training_form") or source.get("training_form") or payload.get("training_started_at") or source.get("training_started_at")),
                 "training_started_at": payload.get("training_started_at", source.get("training_started_at", "")),
                 "training_started_by_username": payload.get(
                     "training_started_by_username",

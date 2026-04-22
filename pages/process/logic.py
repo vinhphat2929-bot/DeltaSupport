@@ -4,7 +4,7 @@ import re
 FIRST_TRAINING_TEMPLATE = [
     {
         "section_key": "devices",
-        "title": "I. SET UP CÁC THIẾT BỊ",
+        "title": "I. SET UP HARDWARE",
         "subtitle": "(Trước khi set up, vào ASANA check trong mục Tracking Number xem bên mình gửi ra những thiết bị gì)",
         "rows": [
             {"kind": "normal", "step": "1", "label": "PC / Duo"},
@@ -47,7 +47,7 @@ FIRST_TRAINING_TEMPLATE = [
     },
     {
         "section_key": "first_training",
-        "title": "III. BẮT ĐẦU TRAINING",
+        "title": "III. TRAINING",
         "subtitle": "(Training sau khi đã hoàn thành các bước trên)\n1st Training\n(Ở buổi đầu training, bảo tiệm chuẩn bị sẵn 1 cái thẻ để charge test và để hướng dẫn các thao tác sau Payment)\n(Nhớ lưu ý bảo tiệm chỉ charge $5 để test, và warning tiệm không được dùng thẻ cá nhân charge vào máy dây những số tiền lớn)",
         "rows": [
             {"kind": "normal", "step": "1", "label": "Hướng dẫn tiệm đầu ngày vào mở đúng App ATLED POS trên PC\n(Hướng dẫn từ màn hình Desktop -> Double tap vào ICON POS)"},

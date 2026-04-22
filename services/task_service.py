@@ -61,6 +61,7 @@ def _normalize_task(task):
     item["note"] = _normalize_text(item.get("note"))
     item["updated_at"] = _normalize_text(item.get("updated_at"))
     item["training_form"] = item.get("training_form") or []
+    item["has_training_form"] = bool(item.get("has_training_form")) or bool(item["training_form"])
     item["training_started_at"] = _normalize_text(item.get("training_started_at"))
     item["training_started_by_username"] = _normalize_text(item.get("training_started_by_username"))
     item["training_started_by_display_name"] = _normalize_text(item.get("training_started_by_display_name"))
@@ -187,12 +188,13 @@ class TaskService:
         except requests.exceptions.RequestException as exc:
             return {"success": False, "message": f"API connection error: {exc}"}
 
-    def get_tasks(self, action_by, show_all=False, include_done=False):
+    def get_tasks(self, action_by, show_all=False, include_done=False, search_text=""):
         try:
             response = requests.get(
                 f"{API_BASE_URL}/task-follows",
                 params={
                     "action_by": action_by,
+                    "search": _normalize_text(search_text),
                     "show_all": bool(show_all),
                     "include_done": bool(include_done),
                 },

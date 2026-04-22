@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import threading
 
 import json
 
@@ -12,6 +13,8 @@ from models import (
 )
 
 router = APIRouter()
+_task_follow_training_columns_lock = threading.Lock()
+_task_follow_training_columns_ready = False
 
 ALLOWED_STATUSES = {
     "FOLLOW",
@@ -257,85 +260,122 @@ def ensure_task_follow_recipient_table(cursor):
         END
         """
     )
+    cursor.execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = 'IX_TaskFollowRecipient_TaskID'
+              AND object_id = OBJECT_ID('dbo.TaskFollowRecipient')
+        )
+        BEGIN
+            CREATE INDEX IX_TaskFollowRecipient_TaskID
+            ON dbo.TaskFollowRecipient(TaskID)
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = 'IX_TaskFollowRecipient_Username'
+              AND object_id = OBJECT_ID('dbo.TaskFollowRecipient')
+        )
+        BEGIN
+            CREATE INDEX IX_TaskFollowRecipient_Username
+            ON dbo.TaskFollowRecipient(Username)
+        END
+        """
+    )
 
 
 def ensure_task_follow_training_columns(cursor):
-    schema_changed = False
+    global _task_follow_training_columns_ready
+    if _task_follow_training_columns_ready:
+        return False
 
-    cursor.execute(
-        """
-        SELECT
-            CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingFormJson') IS NULL THEN 1 ELSE 0 END,
-            CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingStartedAt') IS NULL THEN 1 ELSE 0 END,
-            CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingStartedByUsername') IS NULL THEN 1 ELSE 0 END,
-            CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingStartedByDisplayName') IS NULL THEN 1 ELSE 0 END,
-            CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingCompletedTabsJson') IS NULL THEN 1 ELSE 0 END,
-            CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrackingNumber') IS NULL THEN 1 ELSE 0 END
-        """
-    )
-    row = cursor.fetchone()
-    if row:
-        schema_changed = any(int(value or 0) == 1 for value in row)
+    with _task_follow_training_columns_lock:
+        if _task_follow_training_columns_ready:
+            return False
 
-    cursor.execute(
-        """
-        IF COL_LENGTH('dbo.TaskFollow', 'TrainingFormJson') IS NULL
-        BEGIN
-            ALTER TABLE dbo.TaskFollow
-            ADD TrainingFormJson NVARCHAR(MAX) NULL
-        END
-        """
-    )
-    cursor.execute(
-        """
-        IF COL_LENGTH('dbo.TaskFollow', 'TrainingStartedAt') IS NULL
-        BEGIN
-            ALTER TABLE dbo.TaskFollow
-            ADD TrainingStartedAt DATETIME NULL
-        END
-        """
-    )
-    cursor.execute(
-        """
-        IF COL_LENGTH('dbo.TaskFollow', 'TrainingStartedByUsername') IS NULL
-        BEGIN
-            ALTER TABLE dbo.TaskFollow
-            ADD TrainingStartedByUsername NVARCHAR(100) NULL
-        END
-        """
-    )
-    cursor.execute(
-        """
-        IF COL_LENGTH('dbo.TaskFollow', 'TrainingStartedByDisplayName') IS NULL
-        BEGIN
-            ALTER TABLE dbo.TaskFollow
-            ADD TrainingStartedByDisplayName NVARCHAR(255) NULL
-        END
-        """
-    )
-    cursor.execute(
-        """
-        IF COL_LENGTH('dbo.TaskFollow', 'TrainingCompletedTabsJson') IS NULL
-        BEGIN
-            ALTER TABLE dbo.TaskFollow
-            ADD TrainingCompletedTabsJson NVARCHAR(MAX) NULL
-        END
-        """
-    )
-    cursor.execute(
-        """
-        IF COL_LENGTH('dbo.TaskFollow', 'TrackingNumber') IS NULL
-        BEGIN
-            ALTER TABLE dbo.TaskFollow
-            ADD TrackingNumber NVARCHAR(100) NULL
-        END
-        """
-    )
+        schema_changed = False
 
-    if schema_changed:
-        cursor.connection.commit()
+        cursor.execute(
+            """
+            SELECT
+                CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingFormJson') IS NULL THEN 1 ELSE 0 END,
+                CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingStartedAt') IS NULL THEN 1 ELSE 0 END,
+                CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingStartedByUsername') IS NULL THEN 1 ELSE 0 END,
+                CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingStartedByDisplayName') IS NULL THEN 1 ELSE 0 END,
+                CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingCompletedTabsJson') IS NULL THEN 1 ELSE 0 END,
+                CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrackingNumber') IS NULL THEN 1 ELSE 0 END
+            """
+        )
+        row = cursor.fetchone()
+        if row:
+            schema_changed = any(int(value or 0) == 1 for value in row)
 
-    return schema_changed
+        cursor.execute(
+            """
+            IF COL_LENGTH('dbo.TaskFollow', 'TrainingFormJson') IS NULL
+            BEGIN
+                ALTER TABLE dbo.TaskFollow
+                ADD TrainingFormJson NVARCHAR(MAX) NULL
+            END
+            """
+        )
+        cursor.execute(
+            """
+            IF COL_LENGTH('dbo.TaskFollow', 'TrainingStartedAt') IS NULL
+            BEGIN
+                ALTER TABLE dbo.TaskFollow
+                ADD TrainingStartedAt DATETIME NULL
+            END
+            """
+        )
+        cursor.execute(
+            """
+            IF COL_LENGTH('dbo.TaskFollow', 'TrainingStartedByUsername') IS NULL
+            BEGIN
+                ALTER TABLE dbo.TaskFollow
+                ADD TrainingStartedByUsername NVARCHAR(100) NULL
+            END
+            """
+        )
+        cursor.execute(
+            """
+            IF COL_LENGTH('dbo.TaskFollow', 'TrainingStartedByDisplayName') IS NULL
+            BEGIN
+                ALTER TABLE dbo.TaskFollow
+                ADD TrainingStartedByDisplayName NVARCHAR(255) NULL
+            END
+            """
+        )
+        cursor.execute(
+            """
+            IF COL_LENGTH('dbo.TaskFollow', 'TrainingCompletedTabsJson') IS NULL
+            BEGIN
+                ALTER TABLE dbo.TaskFollow
+                ADD TrainingCompletedTabsJson NVARCHAR(MAX) NULL
+            END
+            """
+        )
+        cursor.execute(
+            """
+            IF COL_LENGTH('dbo.TaskFollow', 'TrackingNumber') IS NULL
+            BEGIN
+                ALTER TABLE dbo.TaskFollow
+                ADD TrackingNumber NVARCHAR(100) NULL
+            END
+            """
+        )
+
+        if schema_changed:
+            cursor.connection.commit()
+
+        _task_follow_training_columns_ready = True
+        return schema_changed
 
 
 def bootstrap_task_follow_schema():
@@ -368,34 +408,6 @@ def parse_training_form_json(value):
     except Exception:
         return []
     return payload if isinstance(payload, list) else []
-    cursor.execute(
-        """
-        IF NOT EXISTS (
-            SELECT 1
-            FROM sys.indexes
-            WHERE name = 'IX_TaskFollowRecipient_TaskID'
-              AND object_id = OBJECT_ID('dbo.TaskFollowRecipient')
-        )
-        BEGIN
-            CREATE INDEX IX_TaskFollowRecipient_TaskID
-            ON dbo.TaskFollowRecipient(TaskID)
-        END
-        """
-    )
-    cursor.execute(
-        """
-        IF NOT EXISTS (
-            SELECT 1
-            FROM sys.indexes
-            WHERE name = 'IX_TaskFollowRecipient_Username'
-              AND object_id = OBJECT_ID('dbo.TaskFollowRecipient')
-        )
-        BEGIN
-            CREATE INDEX IX_TaskFollowRecipient_Username
-            ON dbo.TaskFollowRecipient(Username)
-        END
-        """
-    )
 
 
 def parse_deadline_parts(deadline_date, deadline_time, deadline_period):
@@ -525,11 +537,13 @@ def get_task_recipients(cursor, task_id):
     return recipients
 
 
-def build_task_response(row, history_items=None, recipient_items=None):
+def build_task_response(row, history_items=None, recipient_items=None, include_history=True, include_training_form=True):
     deadline_date_text, deadline_time_text, deadline_period, deadline_full = serialize_deadline(
         row.DeadlineDate,
         row.DeadlineTime,
     )
+    raw_training_form_json = getattr(row, "TrainingFormJson", "")
+    has_training_form = bool(getattr(row, "HasTrainingForm", 0)) or bool(normalize_text(raw_training_form_json))
     recipients = recipient_items or []
     if recipients:
         handoff_to_type = "TEAM"
@@ -576,7 +590,8 @@ def build_task_response(row, history_items=None, recipient_items=None):
         "deadline_period": deadline_period,
         "note": normalize_text(row.CurrentNote),
         "updated_at": row.UpdatedAt.strftime("%d-%m-%Y %I:%M %p") if row.UpdatedAt else "",
-        "training_form": parse_training_form_json(getattr(row, "TrainingFormJson", "")),
+        "training_form": parse_training_form_json(raw_training_form_json) if include_training_form else [],
+        "has_training_form": has_training_form,
         "training_started_at": (
             row.TrainingStartedAt.strftime("%d-%m-%Y %I:%M %p")
             if getattr(row, "TrainingStartedAt", None)
@@ -585,7 +600,7 @@ def build_task_response(row, history_items=None, recipient_items=None):
         "training_started_by_username": normalize_text(getattr(row, "TrainingStartedByUsername", "")),
         "training_started_by_display_name": normalize_text(getattr(row, "TrainingStartedByDisplayName", "")),
         "training_completed_tabs": parse_training_form_json(getattr(row, "TrainingCompletedTabsJson", "")) or [],
-        "history": history_items or [],
+        "history": (history_items or []) if include_history else [],
     }
 
 
@@ -1099,7 +1114,10 @@ def get_task_follows(action_by: str, search: str = "", show_all: bool = False, i
                 DeadlineTime,
                 CurrentNote,
                 UpdatedAt,
-                TrainingFormJson,
+                CASE
+                    WHEN TrainingFormJson IS NULL OR LTRIM(RTRIM(TrainingFormJson)) = '' THEN 0
+                    ELSE 1
+                END AS HasTrainingForm,
                 TrainingStartedAt,
                 TrainingStartedByUsername,
                 TrainingStartedByDisplayName
@@ -1147,7 +1165,14 @@ def get_task_follows(action_by: str, search: str = "", show_all: bool = False, i
         cursor.execute(query, params)
         rows = cursor.fetchall()
 
-        data = [build_task_response(row) for row in rows]
+        data = [
+            build_task_response(
+                row,
+                include_history=False,
+                include_training_form=False,
+            )
+            for row in rows
+        ]
         if board_filter_applied:
             search_scope = "board"
         elif include_done:

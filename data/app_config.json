@@ -1,3 +1,8 @@
 {
-  "api_base_url": "https://underline-steersman-crepe.ngrok-free.dev"
+  "api_base_url": "auto",
+  "api_base_url_candidates": [
+    "http://192.168.80.110:8000",
+    "http://100.111.27.65:8000",
+    "http://127.0.0.1:8000"
+  ]
 }

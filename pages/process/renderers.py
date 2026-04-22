@@ -165,7 +165,10 @@ class ProcessRenderer:
         header_canvas.configure(scrollregion=(0, 0, x + used_width + right_padding, header_height))
         return y + content_padding, hits
 
-    def estimate_training_row_height(self, row, list_width=280):
+    def estimate_training_note_box(self, note_text, note_width=210):
+        return 3, 58
+
+    def estimate_training_row_height(self, row, list_width=280, note_width=210, note_text=""):
         kind = row.get("kind")
         if kind == "banner":
             subtitle = str(row.get("subtitle", "")).strip()
@@ -174,20 +177,26 @@ class ProcessRenderer:
             for part in subtitle.splitlines() or [""]:
                 subtitle_lines += max(1, int(math.ceil(len(part) / max_chars)))
             return 42 + (18 * max(0, subtitle_lines))
-        if kind == "columns": return 30
-        if kind == "group": return 34
+        if kind == "columns":
+            return 30
+        if kind == "group":
+            return 34
         label = str(row.get("label", "")).strip()
         max_chars = max(28, int((max(120, list_width) - 24) / 7))
         line_count = 0
         for part in label.splitlines() or [""]:
             line_count += max(1, int(math.ceil(len(part) / max_chars)))
-        return max(40, 14 + (line_count * 18))
+        _, note_box_height = self.estimate_training_note_box(note_text, note_width=note_width)
+        return max(40, 14 + (line_count * 18), note_box_height + 12)
 
     def redraw_training_canvas(self, canvas, flat_rows, training_note_entries, training_note_values, canvas_width, banner_bg, subheader_bg, group_bg):
         if canvas is None: return 0, []
         for row_key, note_entry in list(training_note_entries.items()):
-            try: training_note_values[row_key] = note_entry.get().strip()
-            except Exception: pass
+            try:
+                training_note_values[row_key] = note_entry.get("1.0", "end-1c").strip()
+            except Exception:
+                try: training_note_values[row_key] = note_entry.get().strip()
+                except Exception: pass
         canvas.delete("all")
         layout = []
         x, y = 0, 0
@@ -197,9 +206,25 @@ class ProcessRenderer:
         col_positions = {"step": x, "list": x + step_w, "result": x + step_w + list_w, "note": x + step_w + list_w + result_w, "right": x + step_w + list_w + result_w + note_w}
 
         for row in flat_rows:
-            height = self.estimate_training_row_height(row, list_width=list_w)
             row_data = row.copy()
+            note_text = ""
+            if row.get("kind") == "normal":
+                row_key = (
+                    str(row.get("section_key", "")).strip(),
+                    str(row.get("step", "")).strip(),
+                    str(row.get("label", "")).strip(),
+                )
+                note_text = str(training_note_values.get(row_key, row.get("note", ""))).strip()
+            height = self.estimate_training_row_height(
+                row,
+                list_width=list_w,
+                note_width=note_w - 16,
+                note_text=note_text,
+            )
             row_data["height"], row_data["y"] = height, y
+            if row.get("kind") == "normal":
+                _, note_box_height = self.estimate_training_note_box(note_text, note_width=note_w - 16)
+                row_data["note_box_height"] = note_box_height
             layout.append(row_data)
             kind = row.get("kind")
             if kind == "banner":

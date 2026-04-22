@@ -1,6 +1,10 @@
 import tkinter as tk
 import customtkinter as ctk
 
+
+SETUP_BOARD_COMPACT_WIDTH = 280
+
+
 class ProcessLayout:
     def __init__(self, page):
         self.page = page
@@ -66,8 +70,12 @@ class ProcessLayout:
         w = {}
         wrap = ctk.CTkFrame(parent, fg_color=colors["BG_PANEL_INNER"], corner_radius=18, border_width=1, border_color=colors["BORDER_SOFT"])
         wrap.grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
-        wrap.grid_columnconfigure(0, weight=4)   # Task Board (slightly larger)
-        wrap.grid_columnconfigure(1, weight=96)   # Detail panel
+        if self.page.is_setup_training_section():
+            wrap.grid_columnconfigure(0, weight=0, minsize=SETUP_BOARD_COMPACT_WIDTH)
+            wrap.grid_columnconfigure(1, weight=1)
+        else:
+            wrap.grid_columnconfigure(0, weight=4)   # Task Board (slightly larger)
+            wrap.grid_columnconfigure(1, weight=96)   # Detail panel
         wrap.grid_rowconfigure(1, weight=1)
         w["follow_wrap"] = wrap
 
@@ -79,72 +87,45 @@ class ProcessLayout:
 
         # Board Column (with search baked in)
         table_card = ctk.CTkFrame(wrap, fg_color="#f7efe2", corner_radius=16, border_width=1, border_color="#cda86a")
-        table_card.grid(row=1, column=0, sticky="nsew", padx=(10, 6), pady=(16, 16))
+        table_card.grid(
+            row=1,
+            column=0,
+            sticky="nsw" if self.page.is_setup_training_section() else "nsew",
+            padx=(10, 6),
+            pady=(16, 16),
+        )
+        if self.page.is_setup_training_section():
+            table_card.configure(width=SETUP_BOARD_COMPACT_WIDTH)
         table_card.grid_columnconfigure(0, weight=1)
         table_card.grid_rowconfigure(1, weight=1)
         w["table_card"] = table_card
 
         if self.page.is_setup_training_section():
-            board_header = ctk.CTkFrame(table_card, fg_color="transparent")
-            board_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(12, 2))
-            board_header.grid_columnconfigure(0, weight=1)
+            top_panel = ctk.CTkFrame(
+                table_card,
+                fg_color="#f4e4ca",
+                corner_radius=14,
+                border_width=1,
+                border_color="#c89247",
+            )
+            top_panel.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 10))
+            top_panel.grid_columnconfigure(0, weight=1)
+
+            title_row = ctk.CTkFrame(top_panel, fg_color="transparent")
+            title_row.grid(row=0, column=0, sticky="ew", padx=18, pady=(12, 6))
+            title_row.grid_columnconfigure(0, weight=1)
+
             ctk.CTkLabel(
-                board_header,
+                title_row,
                 text="Task Board",
-                font=("Segoe UI", 21, "bold"),
+                font=("Segoe UI", 18, "bold"),
                 text_color=colors["TEXT_DARK"],
                 anchor="center",
                 justify="center",
             ).grid(row=0, column=0, sticky="ew")
 
-            search_row = ctk.CTkFrame(table_card, fg_color="transparent")
-            search_row.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 4))
-            search_row.grid_columnconfigure(0, weight=1)
-            search_row.grid_columnconfigure(2, weight=1)
-
-            search_controls = ctk.CTkFrame(search_row, fg_color="transparent")
-            search_controls.grid(row=0, column=1)
-
-            w["search_entry"] = ctk.CTkEntry(
-                search_controls,
-                width=108,
-                height=30,
-                placeholder_text="Search merchant...",
-                fg_color=colors["INPUT_BG"],
-                border_color=colors["INPUT_BORDER"],
-                text_color=colors["TEXT_DARK"],
-                font=("Segoe UI", 10),
-            )
-            w["search_entry"].pack(side="left", padx=(0, 4))
-
-            ctk.CTkButton(
-                search_controls,
-                text="Search",
-                width=48,
-                height=30,
-                corner_radius=10,
-                fg_color=colors["BTN_ACTIVE"],
-                hover_color=colors["BTN_ACTIVE_HOVER"],
-                text_color=colors["TEXT_DARK"],
-                font=("Segoe UI", 10, "bold"),
-                command=callbacks["on_search"],
-            ).pack(side="left", padx=(0, 4))
-
-            ctk.CTkButton(
-                search_controls,
-                text="Clear",
-                width=40,
-                height=30,
-                corner_radius=10,
-                fg_color=colors["BTN_DARK"],
-                hover_color=colors["BTN_DARK_HOVER"],
-                text_color=colors["TEXT_LIGHT"],
-                font=("Segoe UI", 10, "bold"),
-                command=callbacks["on_clear"],
-            ).pack(side="left", padx=(0, 2))
-
-            action_row = ctk.CTkFrame(table_card, fg_color="transparent")
-            action_row.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 6))
+            action_row = ctk.CTkFrame(top_panel, fg_color="transparent")
+            action_row.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 6))
             action_row.grid_columnconfigure(0, weight=1)
             action_row.grid_columnconfigure(2, weight=1)
 
@@ -154,34 +135,34 @@ class ProcessLayout:
             ctk.CTkButton(
                 action_controls,
                 text="+ Create",
-                width=54,
-                height=30,
-                corner_radius=10,
+                width=76,
+                height=32,
+                corner_radius=12,
                 fg_color="#0f766e",
                 hover_color="#115e59",
                 text_color="#ffffff",
                 font=("Segoe UI", 10, "bold"),
                 command=callbacks["on_create"],
-            ).pack(side="left", padx=(0, 4))
+            ).pack(side="left", padx=(0, 6))
 
             w["show_all_button"] = ctk.CTkButton(
                 action_controls,
-                text="All: OFF",
-                width=52,
-                height=30,
-                corner_radius=10,
+                text="Show All: OFF",
+                width=108,
+                height=32,
+                corner_radius=12,
                 fg_color=colors["BTN_DARK"],
                 hover_color=colors["BTN_DARK_HOVER"],
                 text_color=colors["TEXT_LIGHT"],
                 font=("Segoe UI", 10, "bold"),
                 command=callbacks["on_toggle_show_all"],
             )
-            w["show_all_button"].pack(side="left", padx=(0, 4))
+            w["show_all_button"].pack(side="left", padx=(0, 6))
 
             w["include_done_switch"] = ctk.CTkSwitch(
                 action_controls,
                 text="Done",
-                width=40,
+                width=54,
                 switch_width=30,
                 switch_height=16,
                 font=("Segoe UI", 9, "bold"),
@@ -190,6 +171,52 @@ class ProcessLayout:
                 command=callbacks.get("on_toggle_include_done", lambda: None),
             )
             w["include_done_switch"].pack(side="left")
+
+            search_row = ctk.CTkFrame(top_panel, fg_color="transparent")
+            search_row.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 10))
+            search_row.grid_columnconfigure(0, weight=1)
+            search_row.grid_columnconfigure(2, weight=1)
+
+            search_controls = ctk.CTkFrame(search_row, fg_color="transparent")
+            search_controls.grid(row=0, column=1)
+
+            w["search_entry"] = ctk.CTkEntry(
+                search_controls,
+                width=148,
+                height=32,
+                placeholder_text="Search merchant...",
+                fg_color=colors["INPUT_BG"],
+                border_color=colors["INPUT_BORDER"],
+                text_color=colors["TEXT_DARK"],
+                font=("Segoe UI", 10),
+            )
+            w["search_entry"].pack(side="left", padx=(0, 6))
+
+            ctk.CTkButton(
+                search_controls,
+                text="Search",
+                width=58,
+                height=32,
+                corner_radius=12,
+                fg_color=colors["BTN_ACTIVE"],
+                hover_color=colors["BTN_ACTIVE_HOVER"],
+                text_color=colors["TEXT_DARK"],
+                font=("Segoe UI", 10, "bold"),
+                command=callbacks["on_search"],
+            ).pack(side="left", padx=(0, 6))
+
+            ctk.CTkButton(
+                search_controls,
+                text="Clear",
+                width=54,
+                height=32,
+                corner_radius=12,
+                fg_color=colors["BTN_DARK"],
+                hover_color=colors["BTN_DARK_HOVER"],
+                text_color=colors["TEXT_LIGHT"],
+                font=("Segoe UI", 10, "bold"),
+                command=callbacks["on_clear"],
+            ).pack(side="left")
         else:
             top_panel = ctk.CTkFrame(
                 table_card,
@@ -315,7 +342,7 @@ class ProcessLayout:
 
         # --- Board canvas ---
         canvas_wrap = ctk.CTkFrame(table_card, fg_color="#fffdfa", corner_radius=14, border_width=1, border_color="#cfb081")
-        canvas_row = 3 if self.page.is_setup_training_section() else 1
+        canvas_row = 1
         canvas_wrap.grid(row=canvas_row, column=0, sticky="nsew", padx=10, pady=(0, 10))
         canvas_wrap.grid_columnconfigure(0, weight=1)
         canvas_wrap.grid_rowconfigure(1, weight=1)
@@ -332,7 +359,14 @@ class ProcessLayout:
         w["follow_canvas"].configure(yscrollcommand=w["follow_scrollbar"].set)
 
         # Detail Column
-        detail_card = ctk.CTkFrame(wrap, fg_color="#fbf5ec", corner_radius=16, border_width=1, border_color="#e0c79d", width=280)
+        detail_card = ctk.CTkFrame(
+            wrap,
+            fg_color="#fbf5ec",
+            corner_radius=16,
+            border_width=1,
+            border_color="#e0c79d",
+            width=1 if self.page.is_setup_training_section() else 280,
+        )
         detail_card.grid(row=1, column=1, sticky="nsew", padx=(12, 16), pady=(12, 16))
         detail_card.grid_columnconfigure(0, weight=1)
         detail_card.grid_rowconfigure(0, weight=1)
@@ -431,7 +465,7 @@ class ProcessLayout:
         w["detail_hint"].grid(row=row, column=0, sticky="w", padx=18, pady=(0, 14))
         row += 1
 
-        info_card = ctk.CTkFrame(parent, fg_color="#fcf4e8", corner_radius=12, border_width=1, border_color="#d8b37a")
+        info_card = ctk.CTkFrame(parent, fg_color="#f3e0c0", corner_radius=12, border_width=1, border_color="#c89247")
         info_card.grid(row=row, column=0, sticky="ew", padx=18, pady=(0, 12))
         info_card.grid_columnconfigure(0, weight=1)
         row += 1
@@ -481,19 +515,19 @@ class ProcessLayout:
 
         w["checklist_tabs"] = ctk.CTkSegmentedButton(
             tab_wrap,
-            values=["I. SET UP", "II. HƯỚNG DẪN", "III. THEO DÕI"],
+            values=["I. SET UP HARDWARE", "II. SET UP POS", "III. TRAINING"],
             font=("Segoe UI", 13, "bold"),
-            fg_color="#5a4638",
+            fg_color="#4a372b",
             selected_color="#c58b42",
             selected_hover_color="#d49a50",
-            unselected_color="#6b5647",
-            unselected_hover_color="#7b6453",
+            unselected_color="#665244",
+            unselected_hover_color="#745e4f",
             text_color="#f9f2e8",
             text_color_disabled="#d8c7b4",
             command=callbacks.get("on_tab_change", lambda v: None)
         )
         w["checklist_tabs"].pack(fill="x", expand=True)
-        w["checklist_tabs"].set("I. SET UP")
+        w["checklist_tabs"].set("I. SET UP HARDWARE")
         row += 1
 
         w["training_sections_wrap"] = ctk.CTkFrame(parent, fg_color=colors["TRAINING_CANVAS_BG"], corner_radius=12, border_width=1, border_color="#e1c393")

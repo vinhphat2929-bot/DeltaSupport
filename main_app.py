@@ -98,6 +98,7 @@ class MainAppPage(ctk.CTkFrame):
         self.overlay_menu_frame = None
         self.content_wrapper = None
         self.content_frame = None
+        self.cached_content_views = {}
         self.clock_outer = None
         self.right_info_box = None
         self.app_name_label = None
@@ -883,7 +884,49 @@ class MainAppPage(ctk.CTkFrame):
 
     def clear_content_frame(self):
         for widget in self.content_frame.winfo_children():
+            cache_key = getattr(widget, "_delta_cache_key", None)
+            if cache_key:
+                cache_entry = self.cached_content_views.get(cache_key) or {}
+                page_instance = cache_entry.get("page")
+                if page_instance is not None and hasattr(page_instance, "on_page_hide"):
+                    page_instance.on_page_hide()
+                self._hide_content_widget(widget)
+                continue
             widget.destroy()
+
+    def _hide_content_widget(self, widget):
+        manager = widget.winfo_manager()
+        if manager == "pack":
+            widget.pack_forget()
+        elif manager == "grid":
+            widget.grid_remove()
+        elif manager == "place":
+            widget.place_forget()
+
+    def _show_cached_content_view(self, cache_key, builder):
+        self.clear_content_frame()
+
+        cache_entry = self.cached_content_views.get(cache_key)
+        reused = cache_entry is not None
+        if cache_entry:
+            view_root = cache_entry.get("root")
+            if view_root is None or not view_root.winfo_exists():
+                self.cached_content_views.pop(cache_key, None)
+                cache_entry = None
+                reused = False
+
+        if cache_entry is None:
+            view_root, page_instance, pack_kwargs = builder()
+            setattr(view_root, "_delta_cache_key", cache_key)
+            cache_entry = {
+                "root": view_root,
+                "page": page_instance,
+                "pack_kwargs": pack_kwargs or {"fill": "both", "expand": True},
+            }
+            self.cached_content_views[cache_key] = cache_entry
+
+        cache_entry["root"].pack(**cache_entry["pack_kwargs"])
+        return cache_entry["page"], reused
 
     def update_function_visibility(self):
         if self.functions_started:
@@ -1312,12 +1355,12 @@ class MainAppPage(ctk.CTkFrame):
         task_dropdown_inner.pack(fill="both", expand=True, padx=8, pady=8)
 
         task_items = [
-            ("Report", lambda: self.show_process_page("report")),
-            ("Follow", lambda: self.show_process_page("follow")),
-            ("Setup / Training", lambda: self.show_process_page("setup_training")),
+            ("Report", "report", lambda: self.show_process_page("report")),
+            ("Follow", "follow", lambda: self.show_process_page("follow")),
+            ("Setup / Training", "setup_training", lambda: self.show_process_page("setup_training")),
         ]
 
-        for i, (name, command) in enumerate(task_items):
+        for i, (name, section_key, command) in enumerate(task_items):
             btn = ctk.CTkButton(
                 task_dropdown_inner,
                 text=name,
@@ -1331,7 +1374,7 @@ class MainAppPage(ctk.CTkFrame):
                 border_color=BTN_IDLE,
                 font=("Segoe UI", 12, "bold"),
                 anchor="w",
-                command=lambda cmd=command: self.handle_task_menu_action(cmd),
+                command=lambda cmd=command, sec=section_key: self.handle_task_menu_action(cmd, target_section=sec),
             )
             btn.pack(fill="x", padx=10, pady=(10 if i == 0 else 6, 0))
 
@@ -2101,10 +2144,31 @@ class MainAppPage(ctk.CTkFrame):
         self.update_idletasks()
         callback()
 
-    def handle_task_menu_action(self, callback):
+    def handle_task_menu_action(self, callback, target_section=None):
         self.task_dropdown_open = False
         if self.task_dropdown is not None:
             self.task_dropdown.place_forget()
+
+        existing_entry = self.cached_content_views.get("page:task")
+        existing_page = existing_entry.get("page") if existing_entry else None
+        existing_root = existing_entry.get("root") if existing_entry else None
+        task_view_visible = False
+        try:
+            task_view_visible = (
+                existing_root is not None
+                and existing_root.winfo_exists()
+                and str(existing_root.winfo_manager()).strip() != ""
+            )
+        except Exception:
+            task_view_visible = False
+        if (
+            target_section
+            and task_view_visible
+            and existing_page is not None
+            and hasattr(existing_page, "rendered_section")
+            and str(existing_page.rendered_section or "report") == str(target_section)
+        ):
+            return
 
         self.update_idletasks()
         callback()
@@ -2219,19 +2283,21 @@ class MainAppPage(ctk.CTkFrame):
 
         self.hide_top_menus()
         self.set_active_nav("POS")
-        self.clear_content_frame()
+        def builder():
+            view_root = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+            self.create_section_title(
+                view_root,
+                "POS",
+                "Tra cứu và quản lý dữ liệu POS.",
+            )
+            page_host = ctk.CTkFrame(view_root, fg_color="transparent")
+            page_host.pack(fill="both", expand=True, padx=18, pady=(0, 18))
 
-        self.create_section_title(
-            self.content_frame,
-            "POS",
-            "Tra cứu và quản lý dữ liệu POS.",
-        )
+            pos_page = POSPage(page_host)
+            pos_page.pack(fill="both", expand=True)
+            return view_root, pos_page, {"fill": "both", "expand": True}
 
-        page_host = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        page_host.pack(fill="both", expand=True, padx=18, pady=(0, 18))
-
-        pos_page = POSPage(page_host)
-        pos_page.pack(fill="both", expand=True)
+        self._show_cached_content_view("page:pos", builder)
 
     def show_sql_page(self):
         if not self.can_access("SQL"):
@@ -2240,19 +2306,23 @@ class MainAppPage(ctk.CTkFrame):
 
         self.hide_top_menus()
         self.set_active_nav("SQL")
-        self.clear_content_frame()
+        def builder():
+            view_root = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+            page_host = ctk.CTkFrame(view_root, fg_color="transparent")
+            page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
 
-        page_host = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
+            sql_page = None
+            try:
+                sql_page = SQLPage(page_host, current_user=self.user)
+                sql_page.pack(fill="both", expand=True)
+            except Exception:
+                self.create_fallback_text(
+                    page_host,
+                    "SQLPage hiện chưa sẵn sàng hoặc đang lỗi import.",
+                )
+            return view_root, sql_page, {"fill": "both", "expand": True}
 
-        try:
-            sql_page = SQLPage(page_host, current_user=self.user)
-            sql_page.pack(fill="both", expand=True)
-        except Exception:
-            self.create_fallback_text(
-                page_host,
-                "SQLPage hiện chưa sẵn sàng hoặc đang lỗi import.",
-            )
+        self._show_cached_content_view("page:sql", builder)
 
     def show_link_data_page(self):
         if not self.can_access("Link / Data"):
@@ -2261,55 +2331,87 @@ class MainAppPage(ctk.CTkFrame):
 
         self.hide_top_menus()
         self.set_active_nav("Link / Data")
-        self.clear_content_frame()
+        def builder():
+            view_root = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+            self.create_section_title(
+                view_root,
+                "Link / Data",
+                "Tập hợp link, sheet và dữ liệu nội bộ.",
+            )
+            page_host = ctk.CTkFrame(view_root, fg_color="transparent")
+            page_host.pack(fill="both", expand=True, padx=18, pady=(0, 18))
 
-        self.create_section_title(
-            self.content_frame,
-            "Link / Data",
-            "Tập hợp link, sheet và dữ liệu nội bộ.",
-        )
+            link_data_page = LinkDataPage(page_host)
+            link_data_page.pack(fill="both", expand=True)
+            return view_root, link_data_page, {"fill": "both", "expand": True}
 
-        page_host = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        page_host.pack(fill="both", expand=True, padx=18, pady=(0, 18))
-
-        link_data_page = LinkDataPage(page_host)
-        link_data_page.pack(fill="both", expand=True)
+        self._show_cached_content_view("page:link-data", builder)
 
     def show_process_page(self, initial_section="report", initial_task_id=None):
         if not self.can_access("Task"):
             self.show_access_denied("Task")
             return
 
+        existing_entry = self.cached_content_views.get("page:task")
+        existing_page = existing_entry.get("page") if existing_entry else None
+        existing_root = existing_entry.get("root") if existing_entry else None
+        requested_section = initial_section or "report"
+        task_view_visible = False
+        try:
+            task_view_visible = (
+                existing_root is not None
+                and existing_root.winfo_exists()
+                and str(existing_root.winfo_manager()).strip() != ""
+            )
+        except Exception:
+            task_view_visible = False
+        if (
+            initial_task_id in (None, "")
+            and task_view_visible
+            and existing_page is not None
+            and hasattr(existing_page, "rendered_section")
+            and str(existing_page.rendered_section or "report") == str(requested_section)
+        ):
+            return
+
         self.hide_top_menus()
         self.set_active_nav("Task")
-        self.clear_content_frame()
-
-        self.create_section_title(
-            self.content_frame,
-            "Task",
-            "Khu vực task sẽ được build trước.",
-        )
-
-        page_host = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
-
-        try:
-            process_page = ProcessPage(
-                page_host,
-                initial_section=initial_section,
-                current_user=self.user,
-                initial_task_id=initial_task_id,
+        def builder():
+            view_root = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+            self.create_section_title(
+                view_root,
+                "Task",
+                "Khu vực task sẽ được build trước.",
             )
-            process_page.pack(fill="both", expand=True)
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            print(f"DEBUG: Error loading ProcessPage:\n{error_details}")
-            from tkinter import messagebox
-            messagebox.showerror("ProcessPage Error", f"Loi: {e}\n\nXem console de biet chi tiet.")
-            self.create_fallback_text(
-                page_host,
-                f"ProcessPage dang loi: {e}",
+            page_host = ctk.CTkFrame(view_root, fg_color="transparent")
+            page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
+
+            process_page = None
+            try:
+                process_page = ProcessPage(
+                    page_host,
+                    initial_section=initial_section,
+                    current_user=self.user,
+                    initial_task_id=initial_task_id,
+                )
+                process_page.pack(fill="both", expand=True)
+            except Exception as e:
+                import traceback
+                error_details = traceback.format_exc()
+                print(f"DEBUG: Error loading ProcessPage:\n{error_details}")
+                from tkinter import messagebox
+                messagebox.showerror("ProcessPage Error", f"Loi: {e}\n\nXem console de biet chi tiet.")
+                self.create_fallback_text(
+                    page_host,
+                    f"ProcessPage dang loi: {e}",
+                )
+            return view_root, process_page, {"fill": "both", "expand": True}
+
+        process_page, reused = self._show_cached_content_view("page:task", builder)
+        if process_page is not None and hasattr(process_page, "on_page_resume"):
+            process_page.on_page_resume(
+                initial_section=initial_section,
+                initial_task_id=initial_task_id,
             )
 
     def show_work_schedule_page(self):
@@ -2319,24 +2421,29 @@ class MainAppPage(ctk.CTkFrame):
 
         self.hide_top_menus()
         self.set_active_nav("Work Schedule")
-        self.clear_content_frame()
+        def builder():
+            view_root = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+            page_host = ctk.CTkFrame(view_root, fg_color="transparent")
+            page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
 
-        page_host = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
+            current_user = self.user.get("username", "")
+            current_role = self.user.get("role", "")
+            current_department = self.user.get("department", "")
+            current_team = self.user.get("team", "General")
 
-        current_user = self.user.get("username", "")
-        current_role = self.user.get("role", "")
-        current_department = self.user.get("department", "")
-        current_team = self.user.get("team", "General")
+            tech_schedule_page = TechSchedulePage(
+                page_host,
+                current_user=current_user,
+                current_role=current_role,
+                current_department=current_department,
+                current_team=current_team,
+            )
+            tech_schedule_page.pack(fill="both", expand=True)
+            return view_root, tech_schedule_page, {"fill": "both", "expand": True}
 
-        tech_schedule_page = TechSchedulePage(
-            page_host,
-            current_user=current_user,
-            current_role=current_role,
-            current_department=current_department,
-            current_team=current_team,
-        )
-        tech_schedule_page.pack(fill="both", expand=True)
+        tech_schedule_page, reused = self._show_cached_content_view("page:work-schedule", builder)
+        if tech_schedule_page is not None and hasattr(tech_schedule_page, "on_page_resume"):
+            tech_schedule_page.on_page_resume()
 
     def show_leave_summary_page(self):
         if not self.can_access("Monthly Leave Summary"):
@@ -2345,17 +2452,20 @@ class MainAppPage(ctk.CTkFrame):
 
         self.hide_top_menus()
         self.set_active_nav("Monthly Leave Summary")
-        self.clear_content_frame()
+        def builder():
+            view_root = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+            page_host = ctk.CTkFrame(view_root, fg_color="transparent")
+            page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
 
-        page_host = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
+            summary_page = LeaveSummaryPage(
+                page_host,
+                current_user=self.user.get("username", ""),
+                current_role=self.user.get("role", ""),
+            )
+            summary_page.pack(fill="both", expand=True)
+            return view_root, summary_page, {"fill": "both", "expand": True}
 
-        summary_page = LeaveSummaryPage(
-            page_host,
-            current_user=self.user.get("username", ""),
-            current_role=self.user.get("role", ""),
-        )
-        summary_page.pack(fill="both", expand=True)
+        self._show_cached_content_view("page:leave-summary", builder)
 
     def show_leave_request_page(self):
         if not self.can_access("Create Leave Request"):
@@ -2364,17 +2474,20 @@ class MainAppPage(ctk.CTkFrame):
 
         self.hide_top_menus()
         self.set_active_nav("Create Leave Request")
-        self.clear_content_frame()
+        def builder():
+            view_root = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+            page_host = ctk.CTkFrame(view_root, fg_color="transparent")
+            page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
 
-        page_host = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
+            request_page = LeaveRequestPage(
+                page_host,
+                current_user=self.user.get("username", ""),
+                current_role=self.user.get("role", ""),
+            )
+            request_page.pack(fill="both", expand=True)
+            return view_root, request_page, {"fill": "both", "expand": True}
 
-        request_page = LeaveRequestPage(
-            page_host,
-            current_user=self.user.get("username", ""),
-            current_role=self.user.get("role", ""),
-        )
-        request_page.pack(fill="both", expand=True)
+        self._show_cached_content_view("page:leave-request", builder)
 
     def show_schedule_setup_page(self):
         if not self.can_access("Schedule Setup"):
@@ -2383,19 +2496,22 @@ class MainAppPage(ctk.CTkFrame):
 
         self.hide_top_menus()
         self.set_active_nav("Schedule Setup")
-        self.clear_content_frame()
+        def builder():
+            view_root = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+            page_host = ctk.CTkFrame(view_root, fg_color="transparent")
+            page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
 
-        page_host = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))
+            setup_page = ScheduleSetupPage(
+                page_host,
+                current_user=self.user.get("username", ""),
+                current_role=self.user.get("role", ""),
+                current_department=self.user.get("department", ""),
+                current_team=self.user.get("team", "General"),
+            )
+            setup_page.pack(fill="both", expand=True)
+            return view_root, setup_page, {"fill": "both", "expand": True}
 
-        setup_page = ScheduleSetupPage(
-            page_host,
-            current_user=self.user.get("username", ""),
-            current_role=self.user.get("role", ""),
-            current_department=self.user.get("department", ""),
-            current_team=self.user.get("team", "General"),
-        )
-        setup_page.pack(fill="both", expand=True)
+        self._show_cached_content_view("page:schedule-setup", builder)
 
     def show_settings_page(self):
         if not self.can_access("Settings"):

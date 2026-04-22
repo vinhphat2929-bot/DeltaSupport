@@ -1,21 +1,554 @@
 from datetime import datetime
+import math
 from tkinter import messagebox
 from urllib.parse import quote_plus
 import webbrowser
 
 import customtkinter as ctk
 
+from pages.process.layout import SETUP_BOARD_COMPACT_WIDTH
+
 
 class TaskFollowController:
     def __init__(self, page):
         self.page = page
 
-    def render_follow_ui(self):
+    def _get_effective_view_flags(self):
         page = self.page
-        if not hasattr(page, "body_card") or not page.body_card.winfo_exists():
+        return bool(page.follow_show_all), bool(page.follow_include_done)
+
+    def _is_setup_training_item(self, item):
+        page = self.page
+        status_text = str((item or {}).get("status", "")).strip().upper()
+        if status_text in {"SET UP & TRAINING", "2ND TRAINING"}:
+            return True
+        if status_text != "DONE" or not page.follow_include_done:
+            return False
+        if (item or {}).get("has_training_form") or (item or {}).get("training_form"):
+            return True
+        return bool(str((item or {}).get("training_started_at", "")).strip())
+
+    def _filter_items_for_current_section(self, items):
+        page = self.page
+        if not page.is_setup_training_section():
+            return list(items or [])
+        return [item for item in (items or []) if self._is_setup_training_item(item)]
+
+    def _build_history_signature(self, history_items):
+        normalized_items = history_items or []
+        return tuple(
+            (
+                item.get("log_id"),
+                item.get("time"),
+                item.get("action_type"),
+                item.get("note"),
+                item.get("handoff_to"),
+            )
+            for item in normalized_items
+        )
+
+    def _build_follow_form_signature(self, task):
+        current_task = task or {}
+        history_items = current_task.get("history") or []
+        return (
+            current_task.get("task_id"),
+            current_task.get("updated_at"),
+            current_task.get("merchant_raw"),
+            current_task.get("phone"),
+            current_task.get("tracking_number"),
+            current_task.get("problem"),
+            current_task.get("handoff_from"),
+            tuple(current_task.get("handoff_to_display_names") or []),
+            current_task.get("handoff_to"),
+            current_task.get("status"),
+            current_task.get("deadline_date"),
+            current_task.get("deadline_time"),
+            current_task.get("deadline_period"),
+            current_task.get("note"),
+            self._build_history_signature(history_items),
+        )
+
+    def _get_history_canvas(self):
+        page = self.page
+        history_box = getattr(page, "history_box", None)
+        if history_box is None:
+            return None
+        return getattr(history_box, "_parent_canvas", None)
+
+    def _capture_history_scroll_fraction(self):
+        scroll_canvas = self._get_history_canvas()
+        if scroll_canvas is None:
+            return 0.0
+        try:
+            return float(scroll_canvas.yview()[0])
+        except Exception:
+            return 0.0
+
+    def _restore_history_scroll_fraction(self, fraction):
+        scroll_canvas = self._get_history_canvas()
+        if scroll_canvas is None:
+            return
+        try:
+            scroll_canvas.update_idletasks()
+            scroll_canvas.yview_moveto(max(0.0, min(1.0, float(fraction or 0.0))))
+        except Exception:
             return
 
-        for child in page.body_card.winfo_children():
+    def _ensure_history_box_cache(self):
+        page = self.page
+        history_box = getattr(page, "history_box", None)
+        if history_box is None:
+            return None
+
+        if not hasattr(history_box, "_history_entry_cache"):
+            history_box._history_entry_cache = {}
+        if not hasattr(history_box, "_history_entry_order"):
+            history_box._history_entry_order = []
+        if not hasattr(history_box, "_history_empty_label"):
+            history_box._history_empty_label = None
+        if not hasattr(history_box, "_history_owner_task_id"):
+            history_box._history_owner_task_id = None
+        return history_box
+
+    def _build_grouped_history_entries(self, history_items):
+        grouped_history_items = []
+        index = 0
+        normalized_items = history_items or []
+
+        while index < len(normalized_items):
+            item = normalized_items[index] or {}
+            action_type = str(item.get("action_type", "")).strip().upper()
+            log_id = item.get("log_id")
+            base_entry_id = f"log:{log_id}" if log_id not in (None, "") else f"row:{index}"
+
+            if action_type == "ASSIGN":
+                grouped_entry = {
+                    "entry_id": f"assign:{log_id}" if log_id not in (None, "") else f"assign:{index}",
+                    "user": item.get("user", ""),
+                    "time": item.get("time", ""),
+                    "assign_note": item.get("note", ""),
+                    "note": "",
+                }
+                if index + 1 < len(normalized_items):
+                    next_item = normalized_items[index + 1] or {}
+                    next_action_type = str(next_item.get("action_type", "")).strip().upper()
+                    if (
+                        next_action_type != "ASSIGN"
+                        and str(next_item.get("user", "")).strip() == str(item.get("user", "")).strip()
+                        and str(next_item.get("time", "")).strip() == str(item.get("time", "")).strip()
+                    ):
+                        grouped_entry["note"] = next_item.get("note", "")
+                        next_log_id = next_item.get("log_id")
+                        if next_log_id not in (None, ""):
+                            grouped_entry["entry_id"] = f"{grouped_entry['entry_id']}:{next_log_id}"
+                        index += 1
+                grouped_history_items.append(grouped_entry)
+            else:
+                grouped_history_items.append(
+                    {
+                        "entry_id": base_entry_id,
+                        "user": item.get("user", ""),
+                        "time": item.get("time", ""),
+                        "assign_note": "",
+                        "note": item.get("note", ""),
+                    }
+                )
+            index += 1
+
+        for entry in grouped_history_items:
+            entry["content_signature"] = (
+                str(entry.get("user", "")).strip(),
+                str(entry.get("time", "")).strip(),
+                str(entry.get("assign_note", "")).strip(),
+                str(entry.get("note", "")).strip(),
+            )
+        return grouped_history_items
+
+    def _create_history_card(self, parent):
+        page = self.page
+        card = ctk.CTkFrame(
+            parent,
+            fg_color="#fffaf3",
+            corner_radius=12,
+            border_width=1,
+            border_color="#e6cfab",
+        )
+
+        header = ctk.CTkFrame(card, fg_color="transparent")
+        user_label = ctk.CTkLabel(
+            header,
+            text="",
+            font=("Segoe UI", 12, "bold"),
+            text_color=page.TEXT_DARK,
+            anchor="w",
+            justify="left",
+        )
+        time_label = ctk.CTkLabel(
+            header,
+            text="",
+            font=("Segoe UI", 10),
+            text_color=page.TEXT_MUTED,
+            anchor="w",
+            justify="left",
+        )
+
+        assign_wrap = ctk.CTkFrame(
+            card,
+            fg_color="#fff1d6",
+            corner_radius=8,
+            border_width=1,
+            border_color="#d6a24a",
+        )
+        assign_label = ctk.CTkLabel(
+            assign_wrap,
+            text="",
+            font=("Segoe UI", 11, "bold"),
+            text_color="#8a4b00",
+            justify="left",
+            anchor="w",
+        )
+
+        note_label = ctk.CTkLabel(
+            card,
+            text="",
+            font=("Segoe UI", 12),
+            text_color=page.TEXT_MUTED,
+            justify="left",
+            anchor="w",
+        )
+
+        header.pack(fill="x", padx=12, pady=(10, 4))
+        user_label.pack(anchor="w")
+        time_label.pack(anchor="w", pady=(2, 0))
+        assign_label.pack(fill="x", anchor="w", padx=10, pady=(8, 8))
+
+        card._history_widgets = {
+            "header": header,
+            "user_label": user_label,
+            "time_label": time_label,
+            "assign_wrap": assign_wrap,
+            "assign_label": assign_label,
+            "note_label": note_label,
+            "content_signature": None,
+        }
+        return card
+
+    def _update_history_card(self, card, item, note_wraplength, meta_wraplength):
+        widgets = getattr(card, "_history_widgets", {})
+        content_signature = item.get("content_signature")
+        if widgets.get("content_signature") == content_signature:
+            widgets["assign_label"].configure(wraplength=meta_wraplength)
+            widgets["note_label"].configure(wraplength=note_wraplength)
+            return
+
+        widgets["user_label"].configure(text=str(item.get("user", "")).strip() or "-")
+        widgets["time_label"].configure(text=str(item.get("time", "")).strip())
+
+        assign_wrap = widgets["assign_wrap"]
+        assign_label = widgets["assign_label"]
+        assign_note = str(item.get("assign_note", "")).strip()
+        assign_wrap.pack_forget()
+        if assign_note:
+            assign_label.configure(
+                text=assign_note,
+                wraplength=meta_wraplength,
+            )
+            assign_wrap.pack(fill="x", padx=10, pady=(0, 6))
+
+        note_label = widgets["note_label"]
+        note_text = str(item.get("note", "")).strip()
+        note_label.pack_forget()
+        if note_text:
+            note_label.configure(
+                text=note_text,
+                wraplength=note_wraplength,
+            )
+            note_label.pack(fill="x", anchor="w", padx=12, pady=(0, 10))
+
+        widgets["content_signature"] = content_signature
+
+    def _build_follow_board_signature(self, tasks, canvas_width, canvas_height, is_training, active_task_id, visible_range):
+        return (
+            "setup_training" if is_training else "follow",
+            int(canvas_width or 0),
+            int(canvas_height or 0),
+            active_task_id,
+            tuple(visible_range or (0, 0)),
+            tuple(
+                (
+                    task.get("task_id"),
+                    task.get("updated_at"),
+                    bool(task.get("is_saving")),
+                )
+                for task in (tasks or [])
+            ),
+        )
+
+    def _get_board_row_metrics(self, is_training):
+        row_height = 46 if is_training else 44
+        row_gap = 6
+        return {
+            "row_height": row_height,
+            "row_gap": row_gap,
+            "row_stride": row_height + row_gap,
+            "first_row_y": 8,
+            "bottom_padding": 30,
+        }
+
+    def _get_current_board_visible_range(self):
+        return tuple(self.page.get_follow_board_visible_range() or (0, 100))
+
+    def _set_current_board_visible_range(self, visible_range):
+        return self.page.set_follow_board_visible_range(visible_range)
+
+    def _calculate_board_content_bottom(self, tasks_count, first_row_y, row_stride, bottom_padding):
+        return first_row_y + (max(0, int(tasks_count)) * row_stride) + bottom_padding
+
+    def _calculate_visible_task_range(
+        self,
+        canvas,
+        tasks_count,
+        first_row_y,
+        row_stride,
+        total_scroll_height,
+        buffer_rows=10,
+    ):
+        if tasks_count <= 0:
+            return (0, 0)
+
+        try:
+            top_frac, bottom_frac = canvas.yview()
+        except Exception:
+            top_frac, bottom_frac = 0.0, 1.0
+
+        total_scroll_height = max(1.0, float(total_scroll_height or 0.0))
+        top_y = float(top_frac or 0.0) * total_scroll_height
+        bottom_y = float(bottom_frac or 1.0) * total_scroll_height
+        safe_row_stride = max(1, int(row_stride or 1))
+        buffer_rows = max(0, int(buffer_rows or 0))
+
+        first_idx = math.floor((top_y - first_row_y) / safe_row_stride) - buffer_rows
+        last_idx = math.ceil((bottom_y - first_row_y) / safe_row_stride) + buffer_rows
+
+        first_idx = max(0, min(tasks_count, first_idx))
+        last_idx = max(first_idx, min(tasks_count, last_idx))
+
+        if last_idx <= first_idx:
+            first_idx = max(0, min(tasks_count - 1, first_idx))
+            last_idx = min(tasks_count, first_idx + 1)
+
+        return (first_idx, last_idx)
+
+    def _reset_board_scroll_position(self):
+        page = self.page
+        page.reset_follow_board_visible_range()
+        page.follow_board_suppress_selection_scroll = True
+        page.follow_board_render_signature = None
+        canvas = getattr(page, "follow_canvas", None)
+        if canvas is None:
+            return
+        try:
+            if canvas.winfo_exists():
+                canvas.yview_moveto(0.0)
+        except Exception:
+            return
+
+    def _scroll_to_task_index(self, task_index):
+        page = self.page
+        canvas = getattr(page, "follow_canvas", None)
+        tasks = page.filtered_follow_tasks or []
+        if canvas is None or task_index is None or task_index < 0 or task_index >= len(tasks):
+            return False
+
+        metrics = self._get_board_row_metrics(page.is_setup_training_section())
+        row_height = metrics["row_height"]
+        row_stride = metrics["row_stride"]
+        first_row_y = metrics["first_row_y"]
+        content_bottom = self._calculate_board_content_bottom(
+            len(tasks),
+            first_row_y,
+            row_stride,
+            metrics["bottom_padding"],
+        )
+
+        try:
+            visible_height = max(1, int(canvas.winfo_height()))
+        except Exception:
+            visible_height = 1
+
+        total_scroll_height = max(content_bottom, visible_height)
+        try:
+            top_frac, bottom_frac = canvas.yview()
+        except Exception:
+            top_frac, bottom_frac = 0.0, 1.0
+
+        viewport_top = float(top_frac or 0.0) * total_scroll_height
+        viewport_bottom = float(bottom_frac or 1.0) * total_scroll_height
+        row_top = first_row_y + (task_index * row_stride)
+        row_bottom = row_top + row_height
+
+        if row_top >= viewport_top and row_bottom <= viewport_bottom:
+            return False
+
+        if row_top < viewport_top:
+            target_top = row_top
+        else:
+            target_top = row_bottom - visible_height
+
+        max_scroll_top = max(0, total_scroll_height - visible_height)
+        target_top = max(0, min(max_scroll_top, target_top))
+        target_yview = 0.0 if total_scroll_height <= 0 else (target_top / total_scroll_height)
+
+        try:
+            canvas.yview_moveto(target_yview)
+        except Exception:
+            return False
+
+        self.on_follow_board_view_changed(force=True)
+        return True
+
+    def _ensure_task_visible(self, task_id):
+        page = self.page
+        if task_id in (None, ""):
+            return False
+        if getattr(page, "follow_board_suppress_selection_scroll", False):
+            return False
+
+        task_index = next(
+            (
+                index
+                for index, task in enumerate(page.filtered_follow_tasks or [])
+                if task.get("task_id") == task_id
+            ),
+            None,
+        )
+        if task_index is None:
+            return False
+
+        return self._scroll_to_task_index(task_index)
+
+    def on_follow_board_view_changed(self, force=False):
+        page = self.page
+        canvas = getattr(page, "follow_canvas", None)
+        if canvas is None or not page.page_active:
+            return
+        try:
+            if not canvas.winfo_exists():
+                return
+        except Exception:
+            return
+        if not page._can_run_page_job("follow_board_view_change", require_visible=True):
+            return
+
+        metrics = self._get_board_row_metrics(page.is_setup_training_section())
+        try:
+            visible_height = max(1, int(canvas.winfo_height()))
+        except Exception:
+            visible_height = 1
+
+        total_scroll_height = max(
+            self._calculate_board_content_bottom(
+                len(page.filtered_follow_tasks or []),
+                metrics["first_row_y"],
+                metrics["row_stride"],
+                metrics["bottom_padding"],
+            ),
+            visible_height,
+        )
+        next_range = self._calculate_visible_task_range(
+            canvas,
+            len(page.filtered_follow_tasks or []),
+            metrics["first_row_y"],
+            metrics["row_stride"],
+            total_scroll_height,
+            buffer_rows=getattr(page, "follow_board_virtual_buffer_rows", 10),
+        )
+        current_range = self._get_current_board_visible_range()
+        if not force and next_range == current_range:
+            return
+
+        self._set_current_board_visible_range(next_range)
+        if force:
+            page.follow_board_render_signature = None
+        page.schedule_follow_canvas_redraw(delay_ms=1, force=force)
+
+    def _clear_row_active_items(self, canvas, row_meta):
+        for item_id in list(row_meta.get("active_item_ids", [])):
+            try:
+                canvas.delete(item_id)
+            except Exception:
+                pass
+        row_meta["active_item_ids"] = []
+
+    def _set_row_active_state(self, canvas, row_meta, is_active):
+        if canvas is None or row_meta is None:
+            return
+
+        self._clear_row_active_items(canvas, row_meta)
+        if not is_active:
+            return
+
+        x1 = row_meta["x1"]
+        y1 = row_meta["y1"]
+        x2 = row_meta["x2"]
+        y2 = row_meta["y2"]
+        marker_x1 = row_meta["marker_x1"]
+        marker_x2 = row_meta["marker_x2"]
+
+        outline_id = self.page.renderer.draw_round_rect(
+            canvas,
+            x1 - 1,
+            y1 - 1,
+            x2 + 1,
+            y2 + 1,
+            12,
+            "",
+            "#5b3d1d",
+            width=2,
+        )
+        marker_id = canvas.create_rectangle(
+            marker_x1,
+            y1 + 6,
+            marker_x2,
+            y2 - 6,
+            fill="#5b3d1d",
+            outline="",
+        )
+        row_meta["active_item_ids"] = [outline_id, marker_id]
+
+    def update_follow_canvas_active_task(self, next_task_id):
+        page = self.page
+        canvas = getattr(page, "follow_canvas", None)
+        row_meta_map = getattr(page, "follow_canvas_row_meta", {}) or {}
+        previous_task_id = getattr(page, "follow_canvas_active_task_id", None)
+
+        page.follow_canvas_active_task_id = next_task_id
+        if previous_task_id == next_task_id:
+            if next_task_id is not None:
+                self._ensure_task_visible(next_task_id)
+            return
+
+        if canvas is None or not row_meta_map:
+            page.follow_board_render_signature = None
+            page.schedule_follow_canvas_redraw(delay_ms=1, force=True)
+            return
+
+        if previous_task_id in row_meta_map:
+            self._set_row_active_state(canvas, row_meta_map.get(previous_task_id), False)
+        if next_task_id in row_meta_map:
+            self._set_row_active_state(canvas, row_meta_map.get(next_task_id), True)
+        elif next_task_id is not None:
+            if not self._ensure_task_visible(next_task_id):
+                page.follow_board_render_signature = None
+                page.schedule_follow_canvas_redraw(delay_ms=1, force=True)
+
+    def render_follow_ui(self, parent_host=None):
+        page = self.page
+        host = parent_host or getattr(page, "body_card", None)
+        if host is None or not host.winfo_exists():
+            return
+
+        for child in host.winfo_children():
             child.destroy()
 
         colors = {
@@ -45,7 +578,7 @@ class TaskFollowController:
             "on_toggle_include_done": page.toggle_follow_include_done,
         }
 
-        layout_widgets = page.layout.build_main_layout(page.body_card, colors, callbacks)
+        layout_widgets = page.layout.build_main_layout(host, colors, callbacks)
         page.follow_wrap = layout_widgets["follow_wrap"]
         page.follow_top_card = layout_widgets["follow_top_card"]
         page.search_entry = layout_widgets["search_entry"]
@@ -64,17 +597,28 @@ class TaskFollowController:
         page.follow_layout_pending_size = None
         page.follow_layout_applied_size = (0, 0)
         page.follow_canvas_last_render_size = (0, 0)
+        page.follow_canvas_force_redraw = False
+        page.follow_board_render_signature = None
+        page.follow_canvas_row_meta = {}
+        page.follow_canvas_active_task_id = None
+        page.reset_follow_board_visible_range()
+
+        if page.follow_scrollbar is not None:
+            page.follow_scrollbar.configure(command=page.on_follow_canvas_scrollbar)
+        page.follow_canvas.configure(yscrollcommand=page.on_follow_canvas_yscroll)
 
         page.follow_wrap.bind("<Configure>", page.on_follow_wrap_configure)
-        page.search_entry.bind("<KeyRelease>", lambda _e: page.apply_follow_search())
+        page.follow_canvas.bind(
+            "<Configure>",
+            lambda _event: page.schedule_follow_canvas_redraw(delay_ms=60, for_resize=True),
+        )
+        page.search_entry.bind("<KeyRelease>", lambda _e: page.schedule_follow_search_apply())
 
         def _enter_board(_event=None):
             page.set_active_scroll_target("board")
-            page.bind_follow_mousewheel()
 
         def _leave_board(_event=None):
             page.clear_active_scroll_target("board")
-            page.unbind_follow_mousewheel()
 
         page.follow_canvas.bind("<Enter>", _enter_board)
         page.follow_canvas.bind("<Leave>", _leave_board)
@@ -271,7 +815,7 @@ class TaskFollowController:
                 )
 
         if visibility_changed and hasattr(page, "update_detail_scrollregion"):
-            page.after_idle(page.update_detail_scrollregion)
+            page.schedule_detail_scroll_update()
 
     def get_ups_tracking_url(self, tracking_number):
         normalized = str(tracking_number or "").strip().upper()
@@ -304,12 +848,22 @@ class TaskFollowController:
             started = getattr(page, "is_training_started", False)
             task_status = str((page.active_task or {}).get("status", "")).strip().upper()
             is_done_task = task_status == "DONE"
+            is_second_stage = task_status == "2ND TRAINING"
+            has_saved_training_info = page.setup_training_controller._task_has_saved_training_info(page.active_task)
+
+            if hasattr(page, "start_training_button") and page.start_training_button is not None:
+                page.start_training_button.configure(
+                    text="▶  Start 2nd Training" if is_second_stage else "▶  Start 1st Training"
+                )
 
             if started:
                 if hasattr(page, "start_training_button"):
                     page.start_training_button.master.grid_remove()
                 if hasattr(page, "tab_wrap"):
-                    page.tab_wrap.grid()
+                    if is_second_stage:
+                        page.tab_wrap.grid_remove()
+                    else:
+                        page.tab_wrap.grid()
                 if hasattr(page, "training_sections_wrap"):
                     page.training_sections_wrap.grid()
                 if is_done_task:
@@ -322,20 +876,30 @@ class TaskFollowController:
                 if hasattr(page, "start_training_button"):
                     start_wrap = page.start_training_button.master
                     start_wrap.grid()
+                    page.start_training_button.pack_forget()
+                    if hasattr(page, "view_training_info_button"):
+                        page.view_training_info_button.pack_forget()
                     if is_done_task:
-                        page.start_training_button.pack_forget()
                         if hasattr(page, "view_training_info_button"):
                             page.view_training_info_button.pack(side="left", pady=6)
                     else:
-                        if hasattr(page, "view_training_info_button"):
-                            page.view_training_info_button.pack_forget()
                         page.start_training_button.pack(side="left", padx=(0, 8), pady=6)
+                        if hasattr(page, "view_training_info_button") and has_saved_training_info:
+                            page.view_training_info_button.pack(side="left", pady=6)
                 if hasattr(page, "tab_wrap"):
                     page.tab_wrap.grid_remove()
                 if hasattr(page, "training_sections_wrap"):
                     page.training_sections_wrap.grid_remove()
                 if hasattr(page, "action_row"):
                     page.action_row.grid_remove()
+
+            if hasattr(page, "complete_tab_button") and page.complete_tab_button is not None:
+                page.complete_tab_button.pack_forget()
+                page.complete_tab_button.pack(side="left", padx=(0, 6))
+            if hasattr(page, "follow_complete_training_button") and page.follow_complete_training_button is not None:
+                page.follow_complete_training_button.pack_forget()
+                if not is_second_stage:
+                    page.follow_complete_training_button.pack(side="left")
 
             if hasattr(page, "follow_update_button"):
                 is_locked = page._follow_action_is_locked("update") or not is_edit_mode
@@ -370,25 +934,124 @@ class TaskFollowController:
 
     def load_follow_bootstrap(self):
         page = self.page
+        if not page._can_run_page_job("follow_bootstrap", require_visible=False):
+            return
+        page._debug_job("follow_bootstrap", "resume jobs")
+        page.follow_show_all, page.follow_include_done = self._get_effective_view_flags()
+        self.update_follow_filter_controls()
         page.store.set_view(show_all=page.follow_show_all, include_done=page.follow_include_done)
         page.store.load_handoff_options(page.current_username, task_date="")
         self.refresh_follow_tasks()
-        self.poll_follow_store_events()
+        if page.follow_poll_after_id is None:
+            self.poll_follow_store_events()
+
+    def sync_follow_view_from_store(self, keep_selection=False):
+        page = self.page
+        if not hasattr(page, "search_entry"):
+            return
+        try:
+            current_task_id = page.active_task.get("task_id") if page.active_task else None
+            applied_query = str(getattr(page.store, "search_text", "")).strip().lower()
+            try:
+                page.follow_search_pending_query = page.search_entry.get().strip().lower()
+            except Exception:
+                page.follow_search_pending_query = applied_query
+            page.follow_search_last_applied_query = applied_query
+            current_items = self._filter_items_for_current_section(page.store.filter_local(applied_query))
+            page.follow_tasks = list(current_items)
+            page.filtered_follow_tasks = list(current_items)
+            page.follow_search_scope = str(getattr(page.store, "search_scope", "board")).strip() or "board"
+            self.update_follow_scope_hint()
+            self.redraw_follow_canvas()
+
+            if not page.filtered_follow_tasks:
+                self.clear_follow_form()
+                return
+
+            if keep_selection and current_task_id is not None:
+                current_item = next(
+                    (task for task in page.filtered_follow_tasks if task.get("task_id") == current_task_id),
+                    None,
+                )
+                if current_item:
+                    if (
+                        page.is_setup_training_section()
+                        and getattr(page, "is_training_started", False)
+                        and not page.follow_action_inflight
+                    ):
+                        return
+                    page.load_task_into_form(page.store.get_by_id(current_task_id) or current_item)
+                    return
+
+            if page.active_task:
+                active_task_id = page.active_task.get("task_id")
+                if any(task.get("task_id") == active_task_id for task in page.filtered_follow_tasks):
+                    return
+
+            self.clear_follow_form()
+        finally:
+            page.follow_board_suppress_selection_scroll = False
+
+    def _has_pending_follow_poll_work(self):
+        page = self.page
+        if page.pending_focus_task_id is not None:
+            return True
+        if page.follow_detail_pending_id is not None:
+            return True
+        if bool(page.follow_action_inflight):
+            return True
+        if bool(getattr(page.store, "is_loading", False)):
+            return True
+        if bool(getattr(page.store, "_handoff_loading_keys", set())):
+            return True
+        try:
+            return not page.store.event_queue.empty()
+        except Exception:
+            return False
+
+    def should_poll_follow_events(self):
+        page = self.page
+        if page.rendered_section not in {"follow", "setup_training"}:
+            return False
+        return self._has_pending_follow_poll_work()
 
     def poll_follow_store_events(self):
         page = self.page
-        for event in page.store.drain_events():
+        if not self.should_poll_follow_events():
+            page._debug_job("follow_poll", f"stop section={page.rendered_section}")
+            return
+        if not page._can_run_page_job("follow_poll", require_visible=True):
+            return
+
+        events = page.store.drain_events()
+        page._debug_job("follow_poll", f"drain={len(events)}")
+        for event in events:
             self.handle_follow_store_event(event)
-        page.follow_poll_after_id = page.after(120, self.poll_follow_store_events)
+
+        if not self.should_poll_follow_events():
+            page._debug_job("follow_poll", "idle_stop")
+            return
+
+        delay_ms = 180 if events or self._has_pending_follow_poll_work() else 700
+        page._schedule_after_slot(
+            "follow_poll_after_id",
+            delay_ms,
+            self.poll_follow_store_events,
+            "follow_poll",
+            require_visible=True,
+        )
 
     def handle_follow_store_event(self, event):
         page = self.page
+        if page.rendered_section not in {"follow", "setup_training"}:
+            page._debug_job("follow_event", f"drop section={page.rendered_section} event={event.get('type')}")
+            return
         event_type = event.get("type")
 
         if event_type == "tasks_loaded":
             page._finish_follow_action("refresh")
             page.follow_search_scope = str(event.get("search_scope", "board")).strip() or "board"
-            page.apply_follow_search()
+            self.sync_follow_view_from_store(keep_selection=True)
             if page.pending_focus_task_id:
                 target_task_id = page.pending_focus_task_id
                 page.pending_focus_task_id = None
@@ -428,6 +1091,11 @@ class TaskFollowController:
                 and page.popup_handoff_button_wrap is not None
                 and page.popup_handoff_button_wrap.winfo_exists()
             ):
+                popup_option_names = [o["display_name"] for o in page.handoff_options]
+                if not popup_option_names:
+                    popup_option_names = ["Tech Team"]
+                if str(getattr(page, "selected_handoff_to", "")).strip() not in popup_option_names:
+                    page.selected_handoff_to = popup_option_names[0]
                 for child in page.popup_handoff_button_wrap.winfo_children():
                     child.destroy()
                 popup_colors = getattr(page, "colors", None) or {
@@ -437,8 +1105,8 @@ class TaskFollowController:
                 }
                 page.popup_handoff_buttons = page.layout.render_handoff_buttons(
                     page.popup_handoff_button_wrap,
-                    [o["display_name"] for o in page.handoff_options],
-                    [page.selected_handoff_to] if getattr(page, "selected_handoff_to", "") else ["Tech Team"],
+                    popup_option_names,
+                    [page.selected_handoff_to] if getattr(page, "selected_handoff_to", "") else [popup_option_names[0]],
                     page.select_popup_handoff,
                     popup_colors,
                 )
@@ -446,6 +1114,7 @@ class TaskFollowController:
 
         if event_type == "task_detail_loaded":
             item = event.get("item") or {}
+            page.follow_detail_pending_id = None
             if item:
                 if (
                     page.is_setup_training_section()
@@ -459,33 +1128,19 @@ class TaskFollowController:
             return
 
         if event_type == "task_detail_failed":
+            page.follow_detail_pending_id = None
             messagebox.showerror(self.get_task_module_label(), event.get("message", "Khong load duoc task detail."))
             return
 
         if event_type in {"task_upserted", "task_removed"}:
-            current_task_id = page.active_task.get("task_id") if page.active_task else None
-            page.follow_tasks = page.store.get_all()
-            page.filtered_follow_tasks = self.get_section_filtered_tasks(page.search_entry.get().strip())
-            self.redraw_follow_canvas()
-            if current_task_id:
-                current_item = page.store.get_by_id(current_task_id)
-                if current_item:
-                    if (
-                        page.is_setup_training_section()
-                        and getattr(page, "is_training_started", False)
-                        and not page.follow_action_inflight
-                    ):
-                        return
-                    page.load_task_into_form(current_item)
+            self.sync_follow_view_from_store(keep_selection=True)
             return
 
         if event_type == "task_save_failed":
             page._finish_follow_action("save")
             page._finish_follow_action("update")
             messagebox.showerror(self.get_task_module_label(), event.get("message", "Khong luu duoc task."))
-            page.follow_tasks = page.store.get_all()
-            page.filtered_follow_tasks = self.get_section_filtered_tasks(page.search_entry.get().strip())
-            self.redraw_follow_canvas()
+            self.sync_follow_view_from_store(keep_selection=True)
             rollback_item = event.get("rollback_item")
             if rollback_item and event.get("action") == "update":
                 page.load_task_into_form(rollback_item)
@@ -522,8 +1177,10 @@ class TaskFollowController:
                 return option
         return None
 
-    def refresh_follow_tasks(self, search_text="", keep_selection=False, force=False):
+    def refresh_follow_tasks(self, search_text=None, keep_selection=False, force=False):
         page = self.page
+        if not page._can_run_page_job("follow_tasks_refresh", require_visible=False):
+            return
         if not page.current_username:
             page.follow_tasks = []
             page.filtered_follow_tasks = []
@@ -533,44 +1190,78 @@ class TaskFollowController:
             self.clear_follow_form()
             return
 
-        if search_text:
-            page.set_entry_value(page.search_entry, search_text)
+        effective_search_text = (
+            str(search_text).strip().lower()
+            if search_text is not None
+            else str(getattr(page, "follow_search_last_applied_query", "") or "").strip().lower()
+        )
+        if hasattr(page, "search_entry") and page.search_entry is not None:
+            current_entry_query = page.search_entry.get().strip().lower()
+            if search_text is not None and current_entry_query != effective_search_text:
+                page.set_entry_value(page.search_entry, effective_search_text)
+            page.follow_search_pending_query = page.search_entry.get().strip().lower()
+        else:
+            page.follow_search_pending_query = effective_search_text
+        page.follow_search_last_applied_query = effective_search_text
 
-        page.store.set_view(show_all=page.follow_show_all, include_done=page.follow_include_done)
+        previous_view_signature = (
+            bool(getattr(page.store, "show_all", False)),
+            bool(getattr(page.store, "include_done", False)),
+            str(getattr(page.store, "search_text", "")).strip().lower(),
+        )
+        page.follow_show_all, page.follow_include_done = self._get_effective_view_flags()
+        self.update_follow_filter_controls()
+        page.store.set_view(
+            show_all=page.follow_show_all,
+            include_done=page.follow_include_done,
+            search_text=effective_search_text,
+        )
+        next_view_signature = (
+            bool(page.follow_show_all),
+            bool(page.follow_include_done),
+            effective_search_text,
+        )
+        if next_view_signature != previous_view_signature:
+            self._reset_board_scroll_position()
+        self.sync_follow_view_from_store(keep_selection=keep_selection)
+        page._debug_job(
+            "follow_tasks_refresh",
+            (
+                f"force={force} keep_selection={keep_selection} "
+                f"show_all={page.follow_show_all} include_done={page.follow_include_done} "
+                f"search='{effective_search_text}'"
+            ),
+        )
         page.store.load(page.current_username, force=force, background_if_stale=True)
+        if page.follow_poll_after_id is None:
+            self.poll_follow_store_events()
 
     def on_follow_refresh_manual(self):
         page = self.page
         if not page._start_follow_action("refresh"):
             return
-        self.refresh_follow_tasks(force=True)
-
-        page.follow_tasks = self.get_section_filtered_tasks()
-        page.filtered_follow_tasks = self.get_section_filtered_tasks(page.search_entry.get().strip())
-        page.follow_search_scope = page.store.search_scope
-        self.update_follow_scope_hint()
-        self.redraw_follow_canvas()
-
-        current_task_id = page.active_task.get("task_id") if page.active_task else None
-        if current_task_id:
-            current_item = page.store.get_by_id(current_task_id)
-            if current_item:
-                page.load_task_into_form(current_item)
-                return
-
-        if page.filtered_follow_tasks and not page.active_task:
-            self.load_task_detail(page.filtered_follow_tasks[0].get("task_id"))
+        self.refresh_follow_tasks(keep_selection=True, force=True)
 
     def load_task_detail(self, task_id):
         page = self.page
         if not task_id:
             return
 
+        active_task_id = page.active_task.get("task_id") if page.active_task else None
+        same_active_task = active_task_id == task_id
         item = page.store.get_by_id(task_id)
         if item:
-            page.load_task_into_form(item)
+            if not same_active_task:
+                page.load_task_into_form(item)
             if int(task_id) < 0:
+                page.follow_detail_pending_id = None
                 return
+            if item.get("history"):
+                page.follow_detail_pending_id = None
+                return
+        page.follow_detail_pending_id = task_id
+        if page.follow_poll_after_id is None:
+            self.poll_follow_store_events()
         page.store.ensure_detail(task_id, action_by=page.current_username)
 
     def collect_follow_form_payload(self):
@@ -702,18 +1393,25 @@ class TaskFollowController:
 
     def get_section_filtered_tasks(self, query=""):
         page = self.page
-        items = page.store.filter_local(query)
+        effective_query = (
+            query
+            if query is not None
+            else str(getattr(page, "follow_search_last_applied_query", "") or "").strip().lower()
+        )
+        items = page.store.filter_local(effective_query)
         if not page.is_setup_training_section():
             return items
         return [
             item
             for item in items
-            if str(item.get("status", "")).strip().upper() in {"SET UP & TRAINING", "2ND TRAINING"}
+            if self._is_setup_training_item(item)
         ]
 
-    def redraw_follow_canvas(self):
+    def redraw_follow_canvas(self, force=False):
         page = self.page
         if not hasattr(page, "follow_canvas") or not hasattr(page, "follow_header_canvas"):
+            return
+        if not page._can_run_page_job("follow_canvas_render", require_visible=True):
             return
 
         canvas = page.follow_canvas
@@ -733,16 +1431,50 @@ class TaskFollowController:
             previous_xview = header_canvas.xview()[0]
         except Exception:
             previous_xview = 0.0
-        canvas.delete("all")
-        header_canvas.delete("all")
-        page.canvas_row_hits = []
         is_training = page.is_setup_training_section()
-        row_height = 46 if is_training else 44
-        row_gap = 6
+        row_metrics = self._get_board_row_metrics(is_training)
+        row_height = row_metrics["row_height"]
+        row_gap = row_metrics["row_gap"]
+        row_stride = row_metrics["row_stride"]
+        first_row_y = row_metrics["first_row_y"]
         content_padding = 12 if is_training else 46
         header_height = 0 if is_training else 62
         scrollbar_height = 18
         canvas_width = max(canvas.winfo_width(), 220 if is_training else 640)
+        canvas_height = max(canvas.winfo_height(), 1)
+        tasks = page.filtered_follow_tasks or []
+        active_task_id = page.active_task.get("task_id") if page.active_task else None
+        content_bottom = self._calculate_board_content_bottom(
+            len(tasks),
+            first_row_y,
+            row_stride,
+            row_metrics["bottom_padding"],
+        )
+        total_scroll_height = max(content_bottom, canvas_height)
+        visible_range = self._calculate_visible_task_range(
+            canvas,
+            len(tasks),
+            first_row_y,
+            row_stride,
+            total_scroll_height,
+            buffer_rows=getattr(page, "follow_board_virtual_buffer_rows", 10),
+        )
+        self._set_current_board_visible_range(visible_range)
+        render_signature = self._build_follow_board_signature(
+            tasks,
+            canvas_width,
+            canvas_height,
+            is_training,
+            active_task_id,
+            visible_range,
+        )
+        if not force and render_signature == getattr(page, "follow_board_render_signature", None):
+            return
+
+        page.follow_board_render_signature = render_signature
+        canvas.delete("all")
+        header_canvas.delete("all")
+        page.canvas_row_hits = []
 
         if is_training:
             header_canvas.grid_remove()
@@ -809,14 +1541,13 @@ class TaskFollowController:
 
             header_canvas.configure(scrollregion=(0, 0, board_right + 10, row_height + 14))
             header_canvas.xview_moveto(previous_xview)
-            y = 8
+            y = first_row_y
         else:
             x = 10
-            y = 8
+            y = first_row_y
             board_right = max(x + 172, canvas_width - 14)
             resolved_headers = []
 
-        tasks = page.filtered_follow_tasks or []
         content_height = header_height + content_padding
         if tasks:
             content_height += len(tasks) * row_height + max(0, len(tasks) - 1) * row_gap
@@ -842,15 +1573,21 @@ class TaskFollowController:
             header_canvas.configure(scrollregion=(0, 0, board_right + 10, row_height + 14))
             page.follow_board_scroll_enabled = False
 
-        for index, task in enumerate(tasks):
-            row_top = y + (index * (row_height + 6))
+        page.follow_canvas_row_meta = {}
+        page.follow_canvas_active_task_id = active_task_id
+        visible_start, visible_end = visible_range
+        visible_tasks = tasks[visible_start:visible_end]
+        for index, task in enumerate(visible_tasks, start=visible_start):
+            row_top = y + (index * row_stride)
             row_bottom = row_top + row_height
+            is_active = task.get("task_id") == active_task_id
             if is_training:
-                row_fill = "#f8f1e6" if index % 2 == 0 else "#f3e8d8"
-                border_color = "#d3b182"
+                row_fill, row_text = self.get_task_row_theme(task, index)
+                border_color = "#e5d0ad"
             else:
                 row_fill, row_text = self.get_task_row_theme(task, index)
                 border_color = "#e5d0ad"
+            border_width = 1
 
             page.renderer.draw_round_rect(
                 canvas,
@@ -861,24 +1598,26 @@ class TaskFollowController:
                 12,
                 row_fill,
                 border_color,
+                width=border_width,
             )
 
             if is_training:
                 stage_val = str(task.get("status", "")).strip().upper()
                 stage_text = "Done" if stage_val == "DONE" else ("2nd" if stage_val == "2ND TRAINING" else "1st")
                 stage_color = "#7c3aed" if stage_val == "SET UP & TRAINING" else ("#0f766e" if stage_val == "2ND TRAINING" else "#dc2626")
+                assignee_text = str(task.get("handoff_to", "")).strip() or "Tech Team"
                 merchant_label = str(task.get("merchant_raw", "")).strip()
                 zip_code = str(task.get("zip_code", "")).strip()
                 if zip_code and zip_code not in merchant_label:
                     merchant_label = f"{merchant_label} {zip_code}".strip()
-                canvas.create_rectangle(x + 8, row_top + 8, x + 11, row_bottom - 8, fill="#8b5e34", outline="")
+                canvas.create_rectangle(x + 8, row_top + 8, x + 11, row_bottom - 8, fill=stage_color, outline="")
                 canvas.create_text(
                     x + 18,
                     row_top + 13,
                     text=merchant_label,
                     anchor="w",
                     width=max(72, board_right - x - 28),
-                    fill="#1f2937",
+                    fill=row_text,
                     font=("Segoe UI", 10, "bold"),
                 )
                 deadline_text = str(task.get("deadline", "")).strip()
@@ -886,14 +1625,37 @@ class TaskFollowController:
                 badge_width = 40 if stage_text == "Done" else 34
                 badge_x2 = board_right - 10
                 badge_x1 = badge_x2 - badge_width
+                assignee_width = min(92, max(52, (len(assignee_text) * 6) + 18))
+                assignee_x2 = board_right - 10
+                assignee_x1 = assignee_x2 - assignee_width
+                assignee_y1 = row_top + 6
+                assignee_y2 = assignee_y1 + 14
                 canvas.create_text(
                     x + 18,
                     row_top + 32,
                     text=deadline_text,
                     anchor="w",
-                    width=max(60, badge_x1 - x - 24),
-                    fill="#6b4f35",
+                    width=max(44, assignee_x1 - x - 24),
+                    fill=row_text,
                     font=("Segoe UI", 8),
+                )
+                page.renderer.draw_round_rect(
+                    canvas,
+                    assignee_x1,
+                    assignee_y1,
+                    assignee_x2,
+                    assignee_y2,
+                    6,
+                    "#f4ead8",
+                    "#d8b57b",
+                )
+                canvas.create_text(
+                    (assignee_x1 + assignee_x2) / 2,
+                    (assignee_y1 + assignee_y2) / 2,
+                    text=assignee_text,
+                    fill="#6b4f35",
+                    font=("Segoe UI", 7, "bold"),
+                    width=max(24, assignee_width - 8),
                 )
                 badge_y1 = row_top + 24
                 badge_y2 = row_top + 38
@@ -947,9 +1709,21 @@ class TaskFollowController:
                     width=max(10, pill_x2 - pill_x1 - 10),
                 )
 
+            row_meta = {
+                "task_id": task.get("task_id"),
+                "x1": x,
+                "y1": row_top,
+                "x2": board_right,
+                "y2": row_bottom,
+                "marker_x1": x + 4,
+                "marker_x2": x + 8,
+                "active_item_ids": [],
+            }
+            page.follow_canvas_row_meta[task.get("task_id")] = row_meta
+            if is_active:
+                self._set_row_active_state(canvas, row_meta, True)
             page.canvas_row_hits.append((row_top, row_bottom, task))
 
-        content_bottom = y + len(tasks) * (row_height + 6) + 30
         try:
             visible_height = max(1, canvas.winfo_height())
         except Exception:
@@ -958,7 +1732,7 @@ class TaskFollowController:
         page.follow_board_scroll_enabled = content_bottom > (visible_height + 4)
         canvas.configure(scrollregion=(0, 0, board_right + 10, max(content_bottom, visible_height)))
         target_yview = previous_yview if tasks else 0.0
-        page.after_idle(lambda _canvas=canvas, _y=target_yview: _canvas.yview_moveto(_y))
+        page.schedule_follow_scroll_restore(canvas, target_yview)
         header_canvas.xview_moveto(previous_xview)
 
     def update_follow_board_height(self, content_height):
@@ -1028,7 +1802,14 @@ class TaskFollowController:
             page.setup_training_controller.load_task_into_form(task)
             return
 
+        render_signature = self._build_follow_form_signature(task)
+        if render_signature == getattr(page, "follow_form_render_signature", None):
+            page.active_task = task
+            self.update_follow_canvas_active_task(task.get("task_id"))
+            return
+
         page.active_task = task
+        page.follow_form_render_signature = render_signature
         page.detail_hint.configure(text="")
         page.set_entry_value(page.merchant_name_entry, task["merchant_raw"])
         page.set_entry_value(page.phone_entry, task["phone"])
@@ -1068,15 +1849,19 @@ class TaskFollowController:
         self.render_history(task["history"])
         self.update_tracking_controls()
         self.update_follow_form_mode()
-        page.after_idle(page.update_detail_scrollregion)
+        self.update_follow_canvas_active_task(task.get("task_id"))
+        page.schedule_detail_scroll_update()
 
     def clear_follow_form(self):
         page = self.page
+        previous_task_id = page.active_task.get("task_id") if page.active_task else None
         if page.is_setup_training_section():
             page.setup_training_controller.clear_form()
             return
 
         page.active_task = None
+        page.follow_form_render_signature = None
+        page.follow_history_render_signature = None
         page.detail_hint.configure(text=self.get_no_match_detail_hint())
         for entry in [page.merchant_name_entry, page.phone_entry, page.tracking_number_entry, page.problem_entry]:
             page.set_entry_value(entry, "")
@@ -1094,7 +1879,9 @@ class TaskFollowController:
         self.render_history([])
         self.update_tracking_controls()
         self.update_follow_form_mode()
-        page.after_idle(page.update_detail_scrollregion)
+        if previous_task_id is not None:
+            self.update_follow_canvas_active_task(None)
+        page.schedule_detail_scroll_update()
 
     def start_new_task(self):
         page = self.page
@@ -1212,14 +1999,14 @@ class TaskFollowController:
             actor_display_name=page.current_display_name,
             action_by=page.current_username,
         )
-        page.follow_tasks = page.store.get_all()
-        page.filtered_follow_tasks = self.get_section_filtered_tasks(page.search_entry.get().strip())
-        self.redraw_follow_canvas()
+        self.sync_follow_view_from_store(keep_selection=True)
         self.load_task_detail(temp_id)
 
     def refresh_follow_layout(self):
         page = self.page
-        if not hasattr(page, "follow_wrap"):
+        if not page._can_run_page_job("follow_layout_render", require_visible=True):
+            return
+        if not hasattr(page, "follow_wrap") or not page.follow_wrap.winfo_exists():
             return
         width = page.follow_wrap.winfo_width()
         height = page.follow_wrap.winfo_height()
@@ -1230,142 +2017,121 @@ class TaskFollowController:
         page.follow_board_max_height = max(page.follow_board_min_height, height - 110)
         compact_side_width = 180
 
-        if new_mode != page.follow_layout_mode:
-            page.follow_layout_mode = new_mode
-            if page.is_setup_training_section():
-                page.follow_wrap.grid_columnconfigure(0, weight=5, minsize=0)
-                page.follow_wrap.grid_columnconfigure(1, weight=95, minsize=0)
-                page.follow_wrap.grid_rowconfigure(1, weight=1, minsize=0)
-                page.follow_wrap.grid_rowconfigure(2, weight=0, minsize=0)
-                page.table_card.grid_configure(row=1, column=0, padx=(10, 6), pady=(0, 16), sticky="nsew")
-                page.detail_card.grid_configure(row=1, column=1, padx=(12, 16), pady=(0, 16), sticky="nsew")
-            else:
-                page.follow_wrap.grid_columnconfigure(0, weight=85)
-                page.follow_wrap.grid_columnconfigure(1, weight=15)
-                page.follow_wrap.grid_rowconfigure(1, weight=1, minsize=0)
-                page.follow_wrap.grid_rowconfigure(2, weight=0, minsize=0)
-                page.table_card.grid_configure(row=1, column=0, padx=(16, 8), pady=(0, 16), sticky="nsew")
-                page.detail_card.grid_configure(row=1, column=1, padx=(8, 16), pady=(0, 16), sticky="nsew")
-                page.detail_card.configure(width=compact_side_width)
+        page.follow_layout_mode = new_mode
+        if page.is_setup_training_section():
+            page.follow_wrap.grid_columnconfigure(0, weight=0, minsize=SETUP_BOARD_COMPACT_WIDTH)
+            page.follow_wrap.grid_columnconfigure(1, weight=1, minsize=0)
+            page.follow_wrap.grid_rowconfigure(1, weight=1, minsize=0)
+            page.follow_wrap.grid_rowconfigure(2, weight=0, minsize=0)
+            page.table_card.grid_configure(row=1, column=0, padx=(16, 8), pady=(0, 16), sticky="nsw")
+            page.detail_card.grid_configure(row=1, column=1, padx=(8, 16), pady=(0, 16), sticky="nsew")
+            page.table_card.configure(width=SETUP_BOARD_COMPACT_WIDTH)
+            page.detail_card.configure(width=1)
+        else:
+            page.follow_wrap.grid_columnconfigure(0, weight=85, minsize=0)
+            page.follow_wrap.grid_columnconfigure(1, weight=15, minsize=0)
+            page.follow_wrap.grid_rowconfigure(1, weight=1, minsize=0)
+            page.follow_wrap.grid_rowconfigure(2, weight=0, minsize=0)
+            page.table_card.grid_configure(row=1, column=0, padx=(16, 8), pady=(0, 16), sticky="nsew")
+            page.detail_card.grid_configure(row=1, column=1, padx=(8, 16), pady=(0, 16), sticky="nsew")
+            page.detail_card.configure(width=compact_side_width)
 
     def render_history(self, history_items):
         page = self.page
-        for widget in page.history_box.winfo_children():
-            widget.destroy()
-
-        if not history_items:
-            ctk.CTkLabel(
-                page.history_box,
-                text="Chua co history.",
-                font=("Segoe UI", 12),
-                text_color=page.TEXT_MUTED,
-            ).pack(anchor="w", padx=8, pady=8)
+        history_box = self._ensure_history_box_cache()
+        if history_box is None:
             return
 
-        page.history_box.update_idletasks()
-        available_width = max(page.history_box.winfo_width(), 280)
+        grouped_history_items = self._build_grouped_history_entries(history_items)
+        history_box.update_idletasks()
+        available_width = max(history_box.winfo_width(), 280)
         card_width = max(240, available_width - 28)
         note_wraplength = max(210, card_width - 34)
         meta_wraplength = max(180, card_width - 34)
-
-        grouped_history_items = []
-        index = 0
-        while index < len(history_items):
-            item = history_items[index] or {}
-            action_type = str(item.get("action_type", "")).strip().upper()
-            if action_type == "ASSIGN":
-                grouped_entry = {
-                    "user": item.get("user", ""),
-                    "time": item.get("time", ""),
-                    "assign_note": item.get("note", ""),
-                    "note": "",
-                }
-                if index + 1 < len(history_items):
-                    next_item = history_items[index + 1] or {}
-                    next_action_type = str(next_item.get("action_type", "")).strip().upper()
-                    if (
-                        next_action_type != "ASSIGN"
-                        and str(next_item.get("user", "")).strip() == str(item.get("user", "")).strip()
-                        and str(next_item.get("time", "")).strip() == str(item.get("time", "")).strip()
-                    ):
-                        grouped_entry["note"] = next_item.get("note", "")
-                        index += 1
-                grouped_history_items.append(grouped_entry)
-            else:
-                grouped_history_items.append(
-                    {
-                        "user": item.get("user", ""),
-                        "time": item.get("time", ""),
-                        "assign_note": "",
-                        "note": item.get("note", ""),
-                    }
+        history_signature = (
+            tuple(
+                (
+                    item.get("entry_id"),
+                    item.get("content_signature"),
                 )
-            index += 1
+                for item in grouped_history_items
+            ),
+            available_width,
+        )
+        if history_signature == getattr(page, "follow_history_render_signature", None):
+            return
 
-        for item in grouped_history_items:
-            card = ctk.CTkFrame(
-                page.history_box,
-                fg_color="#fffaf3",
-                corner_radius=12,
-                border_width=1,
-                border_color="#e6cfab",
-            )
-            card.pack(fill="x", padx=8, pady=6)
+        page.follow_history_render_signature = history_signature
+        current_task_id = page.active_task.get("task_id") if page.active_task else None
+        previous_task_id = getattr(history_box, "_history_owner_task_id", None)
+        scroll_fraction = 0.0 if current_task_id != previous_task_id else self._capture_history_scroll_fraction()
+        history_box._history_owner_task_id = current_task_id
 
-            header = ctk.CTkFrame(card, fg_color="transparent")
-            header.pack(fill="x", padx=12, pady=(10, 4))
+        entry_cache = getattr(history_box, "_history_entry_cache", {})
+        desired_entry_ids = [item.get("entry_id") for item in grouped_history_items]
+        desired_entry_id_set = set(desired_entry_ids)
 
-            ctk.CTkLabel(
-                header,
-                text=str(item.get("user", "")).strip() or "-",
-                font=("Segoe UI", 12, "bold"),
-                text_color=page.TEXT_DARK,
-                anchor="w",
-                justify="left",
-            ).pack(anchor="w")
+        for entry_id in list(entry_cache.keys()):
+            if entry_id in desired_entry_id_set:
+                continue
+            card = entry_cache.pop(entry_id, None)
+            if card is not None:
+                try:
+                    card.destroy()
+                except Exception:
+                    pass
 
-            ctk.CTkLabel(
-                header,
-                text=str(item.get("time", "")).strip(),
-                font=("Segoe UI", 10),
-                text_color=page.TEXT_MUTED,
-                anchor="w",
-                justify="left",
-            ).pack(anchor="w", pady=(2, 0))
-
-            assign_note = str(item.get("assign_note", "")).strip()
-            if assign_note:
-                assign_wrap = ctk.CTkFrame(
-                    card,
-                    fg_color="#fff1d6",
-                    corner_radius=8,
-                    border_width=1,
-                    border_color="#d6a24a",
-                )
-                assign_wrap.pack(fill="x", padx=10, pady=(0, 6))
-                ctk.CTkLabel(
-                    assign_wrap,
-                    text=assign_note,
-                    font=("Segoe UI", 11, "bold"),
-                    text_color="#8a4b00",
-                    justify="left",
-                    wraplength=meta_wraplength,
-                    anchor="w",
-                ).pack(fill="x", anchor="w", padx=10, pady=(8, 8))
-
-            note_text = str(item.get("note", "")).strip()
-            if note_text:
-                ctk.CTkLabel(
-                    card,
-                    text=note_text,
+        empty_label = getattr(history_box, "_history_empty_label", None)
+        if not grouped_history_items:
+            for card in entry_cache.values():
+                try:
+                    card.pack_forget()
+                except Exception:
+                    pass
+            entry_cache.clear()
+            if empty_label is None or not empty_label.winfo_exists():
+                empty_label = ctk.CTkLabel(
+                    history_box,
+                    text="Chua co history.",
                     font=("Segoe UI", 12),
                     text_color=page.TEXT_MUTED,
-                    justify="left",
-                    wraplength=note_wraplength,
-                    anchor="w",
-                ).pack(fill="x", anchor="w", padx=12, pady=(0, 10))
+                )
+                history_box._history_empty_label = empty_label
+            empty_label.pack(anchor="w", padx=8, pady=8)
+            history_box._history_entry_order = []
+            self._restore_history_scroll_fraction(0.0)
+            return
 
-        page.after_idle(page.update_detail_scrollregion)
+        if empty_label is not None and empty_label.winfo_exists():
+            empty_label.pack_forget()
+
+        ordered_cards = []
+        for item in grouped_history_items:
+            entry_id = item.get("entry_id")
+            card = entry_cache.get(entry_id)
+            if card is None or not card.winfo_exists():
+                card = self._create_history_card(history_box)
+                entry_cache[entry_id] = card
+            self._update_history_card(
+                card,
+                item,
+                note_wraplength=note_wraplength,
+                meta_wraplength=meta_wraplength,
+            )
+            ordered_cards.append(card)
+
+        for card in ordered_cards:
+            try:
+                card.pack_forget()
+            except Exception:
+                pass
+            card.pack(fill="x", padx=8, pady=6)
+
+        history_box._history_entry_cache = entry_cache
+        history_box._history_entry_order = desired_entry_ids
+
+        page.schedule_detail_scroll_update()
+        self._restore_history_scroll_fraction(scroll_fraction)
 
     def on_follow_save(self):
         page = self.page
@@ -1395,9 +2161,7 @@ class TaskFollowController:
             actor_display_name=page.current_display_name,
             action_by=page.current_username,
         )
-        page.follow_tasks = page.store.get_all()
-        page.filtered_follow_tasks = self.get_section_filtered_tasks(page.search_entry.get().strip())
-        self.redraw_follow_canvas()
+        self.sync_follow_view_from_store(keep_selection=True)
         self.load_task_detail(temp_id)
 
     def on_follow_update(self):

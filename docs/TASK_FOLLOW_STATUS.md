@@ -1,10 +1,12 @@
 # Task Follow Status
 
-Cap nhat: 19-04-2026
+Cap nhat: 22-04-2026
 
 ## 0. Trang thai chot
 
 - Task Follow cho dot nay da chot.
+- Cac hang muc `Setup & Training review` va `2ND TRAINING flow` da chot UI + chuc nang.
+- Tru van de lag / hieu nang neu user mo yeu cau rieng, khong tu y sua tiep 2 hang muc nay.
 - Neu khong co yeu cau moi tu user, khong tu y mo lai / refactor tiep / redesign them.
 - File nay dung de danh dau ro phan nao da lam xong de AI/dev den sau khong dung vao nham.
 
@@ -129,6 +131,38 @@ Task Follow dang di theo huong:
   - note nam ben duoi trong cung card
 - User da chot Task Follow tai day, khong mo rong them trong dot nay.
 
+### 22-04-2026
+
+- Da chot luong `SET UP & TRAINING` / `2ND TRAINING` theo huong dung chung 1 checklist training da luu.
+- Da them popup `View Setup & Training Info` de xem lai noi dung setup/training da luu.
+- Popup review hien:
+  - merchant
+  - zip code
+  - stage
+  - deadline
+  - `training started at`
+  - `training started by`
+  - tung section / step / result / note dang read-only
+- Popup review doc du lieu da luu tu `active_task.training_form`, backend map tu `dbo.TaskFollow.TrainingFormJson`.
+- Nut `View Setup & Training Info` chi hien khi task co du lieu training da luu; task `DONE` chi giu nut xem lai, khong hien nut start training nua.
+- Da chot ten 3 tab / section dung exact text:
+  - `I. SET UP HARDWARE`
+  - `II. SET UP POS`
+  - `III. TRAINING`
+- Da sua callback textbox de nhap note trong setup/training khong con loi bind event.
+- Da chot flow `2ND TRAINING`:
+  - van dung checklist training hien co
+  - khi complete `1st training` -> task sang `2ND TRAINING`
+  - khi complete `2nd training` -> task len `DONE` ngay
+  - khong mo popup bat handoff moi cho buoc complete `2nd training`
+  - deadline/handoff dang co duoc giu nguyen
+  - backend van yeu cau note khi `DONE`, frontend da tu dien note tu noi dung `2nd training` hoac fallback `Completed 2nd Training`
+- Da chot lai filter cho nhom setup/training theo co che cu:
+  - van ton trong `Show All`
+  - van ton trong `Include Done`
+  - khong tu y ep task `DONE` hien ra chi vi la task setup/training
+- Da co nut xem lai thong tin training ngay trong detail panel cua task setup/training khi task co saved training info.
+
 ## 3. Da lam duoc
 
 ### UI / Frontend
@@ -156,6 +190,19 @@ Task Follow dang di theo huong:
 - Khi `DONE` bat buoc phai co note.
 - Sau khi `Update`, note tren form/task se duoc clear va chi giu trong history/log.
 - Da sua optimistic create de khong spam popup loi gia trong luc task vua duoc tao.
+
+### Setup / Training UI / Frontend
+
+- Da co giao dien setup/training theo 3 tab:
+  - `I. SET UP HARDWARE`
+  - `II. SET UP POS`
+  - `III. TRAINING`
+- Da co popup `View Setup & Training Info` dang read-only de xem lai du lieu training da luu.
+- Popup review chi hien khi task dang chon co `training_form`.
+- Task `DONE` thuoc setup/training:
+  - van xem lai duoc training info
+  - khong bat dau training lai trong flow da chot
+- Setup/training khong co behavior hien `DONE` dac cach; van phu thuoc `Show All` + `Include Done` nhu truoc.
 
 ### Notice UI / Frontend
 
@@ -188,6 +235,12 @@ Task Follow dang di theo huong:
   - local read ngay
   - gom nhieu task vua doc de sync batch
   - tranh goi API tung item neu user bam lien tiep
+- Setup/training submit dang gui them:
+  - `training_form`
+  - `training_completed_tabs`
+  - `training_started_at`
+  - `training_started_by_username`
+  - `training_started_by_display_name`
 
 ### Backend API
 
@@ -202,6 +255,12 @@ Task Follow dang di theo huong:
   - `GET /task-follows/{task_id}`
   - `POST /task-follows`
   - `PUT /task-follows/{task_id}`
+- `GET /task-follows` va `GET /task-follows/{task_id}` dang tra them:
+  - `training_form`
+  - `training_completed_tabs`
+  - `training_started_at`
+  - `training_started_by_username`
+  - `training_started_by_display_name`
 
 ### SQL / Logic
 
@@ -223,6 +282,13 @@ Task Follow dang di theo huong:
   - thoi gian
 - `NOTICE` backend local dang sort theo thoi diem cap nhat gan nhat (`UpdatedAt DESC`) va fallback tie-break theo `TaskID DESC`.
 - `NOTICE` backend local da join recipient theo tung user, nen task handoff cho nhieu user van vao dung notice cua moi nguoi.
+- Du lieu phuc vu `View Setup & Training Info` dang luu o:
+  - `dbo.TaskFollow.TrainingFormJson`
+  - `dbo.TaskFollow.TrainingCompletedTabsJson`
+  - `dbo.TaskFollow.TrainingStartedAt`
+  - `dbo.TaskFollow.TrainingStartedByUsername`
+  - `dbo.TaskFollow.TrainingStartedByDisplayName`
+- `View Setup & Training Info` khong co bang rieng; doc tu task detail cua `dbo.TaskFollow`.
 
 ## 4. Da noi den dau
 
@@ -299,6 +365,7 @@ User da xac nhan co truong hop restart `ngrok` xong la app dung lai binh thuong.
 - Chua co co che realtime refresh board.
 - Chua co phan trang / lazy load.
 - Chua co audit doc lap / test automation cho luong Task Follow.
+- Van de lag / hieu nang cua setup-training neu con ton tai khong nam trong muc "da chot", co the mo task rieng neu user yeu cau.
 
 Ghi chu:
 - Cac muc tren la backlog xa hon, khong phai viec dang mo.

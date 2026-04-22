@@ -21,7 +21,7 @@ class ProcessService:
         if not self.username:
             return
         
-        self.store.set_view(show_all=show_all, include_done=include_done)
+        self.store.set_view(show_all=show_all, include_done=include_done, search_text=search_text)
         self.store.load(self.username, force=force, background_if_stale=True)
 
     def load_task_detail(self, task_id):
@@ -120,25 +120,32 @@ class ProcessService:
             opt = next((o for o in handoff_options if str(o.get("display_name", "")).strip() == name), None)
             if opt:
                 matched_options.append(opt)
-        
-        if not matched_options:
-            return None, "Hay chon nguoi nhan ban giao."
 
-        if any(str(o.get("type", "")).strip().upper() == "TEAM" for o in matched_options):
-            team_opt = next((o for o in matched_options if str(o.get("type", "")).strip().upper() == "TEAM"), {})
-            handoff_to_type = "TEAM"
-            handoff_to_username = ""
-            handoff_to_display_name = str(team_opt.get("display_name", "Tech Team")).strip() or "Tech Team"
-            handoff_to_usernames = []
-            handoff_to_display_names = [handoff_to_display_name]
+        if complete_second:
+            handoff_to_type = active_task.get("handoff_to_type", "")
+            handoff_to_username = active_task.get("handoff_to_username", "")
+            handoff_to_display_name = active_task.get("handoff_to_display_name", "")
+            handoff_to_usernames = list(active_task.get("handoff_to_usernames", []) or [])
+            handoff_to_display_names = list(active_task.get("handoff_to_display_names", []) or [])
         else:
-            handoff_to_display_names = [str(o.get("display_name", "")).strip() for o in matched_options if str(o.get("display_name", "")).strip()]
-            handoff_to_usernames = [str(o.get("username", "")).strip() for o in matched_options if str(o.get("username", "")).strip()]
-            if not handoff_to_usernames:
-                return None, "Hay chon nguoi nhan ban giao hop le."
-            handoff_to_type = "USER" if len(handoff_to_usernames) == 1 else "USERS"
-            handoff_to_username = handoff_to_usernames[0] if len(handoff_to_usernames) == 1 else ""
-            handoff_to_display_name = ", ".join(handoff_to_display_names)
+            if not matched_options:
+                return None, "Hay chon nguoi nhan ban giao."
+
+            if any(str(o.get("type", "")).strip().upper() == "TEAM" for o in matched_options):
+                team_opt = next((o for o in matched_options if str(o.get("type", "")).strip().upper() == "TEAM"), {})
+                handoff_to_type = "TEAM"
+                handoff_to_username = ""
+                handoff_to_display_name = str(team_opt.get("display_name", "Tech Team")).strip() or "Tech Team"
+                handoff_to_usernames = []
+                handoff_to_display_names = [handoff_to_display_name]
+            else:
+                handoff_to_display_names = [str(o.get("display_name", "")).strip() for o in matched_options if str(o.get("display_name", "")).strip()]
+                handoff_to_usernames = [str(o.get("username", "")).strip() for o in matched_options if str(o.get("username", "")).strip()]
+                if not handoff_to_usernames:
+                    return None, "Hay chon nguoi nhan ban giao hop le."
+                handoff_to_type = "USER" if len(handoff_to_usernames) == 1 else "USERS"
+                handoff_to_username = handoff_to_usernames[0] if len(handoff_to_usernames) == 1 else ""
+                handoff_to_display_name = ", ".join(handoff_to_display_names)
 
         started_at_text = str(active_task.get("training_started_at", "")).strip()
         started_by_username = str(active_task.get("training_started_by_username", "")).strip() or self.username
@@ -174,7 +181,11 @@ class ProcessService:
             payload["status"] = active_task.get("status", "SET UP & TRAINING")
 
         deadline_date = form_data.get("deadline_date")
-        if deadline_date:
+        if complete_second:
+            payload["deadline_date"] = active_task.get("deadline_date", "")
+            payload["deadline_time"] = active_task.get("deadline_time", "")
+            payload["deadline_period"] = active_task.get("deadline_period", "AM")
+        elif deadline_date:
             payload["deadline_date"] = deadline_date
             payload["deadline_time"] = form_data.get("deadline_time", "")
             payload["deadline_period"] = form_data.get("deadline_period", "AM")
