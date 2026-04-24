@@ -119,6 +119,28 @@ Hoac neu can host/port ro:
 uvicorn api_server:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+### Build `.exe` bang PyInstaller
+
+Build theo file spec:
+
+```powershell
+python -m PyInstaller --noconfirm --clean main.spec
+```
+
+Neu can build truc tiep bang command thay vi `.spec`, dung command co collect package timezone day du:
+
+```powershell
+python -m PyInstaller --noconfirm --clean --windowed --name main --add-data "data;data" --collect-all tzdata --collect-all zip2tz main.py
+```
+
+Khi build xong, bundle phai tu chua:
+- `tzdata`
+- `zip2tz`
+- du lieu `zoneinfo` can cho `Asia/Ho_Chi_Minh` va cac timezone IANA khac
+
+Khuyen nghi:
+- uu tien build bang `main.spec` vi file nay da tu fallback icon neu repo chua co san `.ico`
+
 ## Cau hinh API
 
 Frontend hien dang goi toi:

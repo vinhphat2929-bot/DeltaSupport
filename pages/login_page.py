@@ -67,14 +67,14 @@ class LoginPage(ctk.CTkFrame):
         container.place(relx=0.5, rely=0.5, anchor="center")
         container.pack_propagate(False)
 
-        logo_path = get_data_path("logo_mark_v3.png")
+        logo_path = get_data_path("icon.png")
         fallback_logo_path = get_data_path("logo.png")
 
         if os.path.exists(logo_path):
             try:
-                self.logo_image = self.load_image_fit("logo_mark_v3.png", 210, 130)
+                self.logo_image = self.load_image_fit("icon.png", 150, 150)
                 logo_label = ctk.CTkLabel(container, image=self.logo_image, text="")
-                logo_label.pack(pady=(22, 8))
+                logo_label.pack(pady=(28, 16))
             except Exception:
                 fallback_logo = ctk.CTkLabel(
                     container,
@@ -91,19 +91,11 @@ class LoginPage(ctk.CTkFrame):
             except Exception:
                 pass
 
-        title = ctk.CTkLabel(
-            container,
-            text="Delta One",
-            font=ctk.CTkFont(size=38, weight="bold"),
-            text_color="#f4e7c1",
-        )
-        title.pack(pady=(4, 18))
-
         # ===== USERNAME =====
         user_frame = ctk.CTkFrame(
             container, width=300, height=48, corner_radius=14, fg_color="#f6ead2"
         )
-        user_frame.pack(pady=10)
+        user_frame.pack(pady=(8, 10))
         user_frame.pack_propagate(False)
 
         ctk.CTkLabel(user_frame, image=self.user_icon, text="").pack(

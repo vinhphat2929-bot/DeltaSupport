@@ -83,6 +83,7 @@ class MainAppPage(ctk.CTkFrame):
 
         self.logo_image = None
         self.logo_image_compact = None
+        self.home_image = None
         self.lock_icon = None
         self.settings_icon = None
         self.logout_icon = None
@@ -1123,7 +1124,9 @@ class MainAppPage(ctk.CTkFrame):
     # BUILD UI
     # =========================================================
     def build_ui(self):
-        self.logo_image = self.safe_load_image_fit("logo_mark_v3.png", 116, 78)
+        self.logo_image = self.safe_load_image_fit("logo-goc.png", 132, 56)
+        if self.logo_image is None:
+            self.logo_image = self.safe_load_image_fit("logo_mark_v3.png", 116, 78)
         if self.logo_image is None:
             self.logo_image = self.safe_load_image_fit("logo_mark_v2.png", 116, 78)
         if self.logo_image is None:
@@ -1133,7 +1136,9 @@ class MainAppPage(ctk.CTkFrame):
         if self.logo_image is None:
             self.logo_image = self.safe_load_image_fit("home.png", 116, 78)
 
-        self.logo_image_compact = self.safe_load_image_fit("logo_mark_v3.png", 84, 52)
+        self.logo_image_compact = self.safe_load_image_fit("logo-goc.png", 116, 44)
+        if self.logo_image_compact is None:
+            self.logo_image_compact = self.safe_load_image_fit("logo_mark_v3.png", 84, 52)
         if self.logo_image_compact is None:
             self.logo_image_compact = self.safe_load_image_fit("logo_mark_v2.png", 84, 52)
         if self.logo_image_compact is None:
@@ -1142,6 +1147,10 @@ class MainAppPage(ctk.CTkFrame):
             self.logo_image_compact = self.safe_load_image_fit("app.ico", 84, 52)
         if self.logo_image_compact is None:
             self.logo_image_compact = self.safe_load_image_fit("home.png", 84, 52)
+
+        self.home_image = self.safe_load_image_fit("home.png", 720, 250)
+        if self.home_image is None:
+            self.home_image = self.logo_image
 
         self.settings_icon = self.safe_load_icon("setting.png", (22, 22))
         self.lock_icon = self.safe_load_icon("lock.png", (22, 22))
@@ -1186,7 +1195,7 @@ class MainAppPage(ctk.CTkFrame):
         if self.logo_image:
             self.logo_wrap = ctk.CTkFrame(
                 self.left_box,
-                width=88,
+                width=132,
                 height=56,
                 fg_color="transparent",
             )
@@ -2217,19 +2226,19 @@ class MainAppPage(ctk.CTkFrame):
         hero_box = ctk.CTkFrame(welcome_card, fg_color="transparent")
         hero_box.grid(row=0, column=0)
 
-        if self.logo_image is not None:
+        if self.home_image is not None:
             ctk.CTkLabel(
                 hero_box,
                 text="",
-                image=self.logo_image,
-            ).pack(pady=(10, 20))
-
-        ctk.CTkLabel(
-            hero_box,
-            text="Welcome to Delta One",
-            font=("Segoe UI", 30, "bold"),
-            text_color=TEXT_DARK,
-        ).pack(pady=(0, 10))
+                image=self.home_image,
+            ).pack(pady=(12, 24))
+        else:
+            ctk.CTkLabel(
+                hero_box,
+                text="Welcome to Delta One",
+                font=("Segoe UI", 30, "bold"),
+                text_color=TEXT_DARK,
+            ).pack(pady=(0, 10))
 
         ctk.CTkLabel(
             hero_box,

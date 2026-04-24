@@ -525,7 +525,7 @@ def get_task_report_technicians(action_by: str, work_date: str = "", work_time: 
             matched_user_map = {}
             for row in cursor.fetchall():
                 username = normalize_username(row[0])
-                display_name = normalize_text(row[4]) or username
+                display_name = normalize_text(row[5]) or username
                 if not username:
                     continue
                 if not schedule_row_matches_target(

@@ -51,7 +51,7 @@ class App(ctk.CTk):
         self._native_style_job = None
         self._icon_photo = None
 
-        self.title("Delta One")
+        self.title("")
         self.resizable(True, True)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
@@ -73,23 +73,28 @@ class App(ctk.CTk):
             pass
 
     def set_app_icon(self):
-        icon_path = get_data_path("app_v3.ico")
-        if not os.path.exists(icon_path):
-            icon_path = get_data_path("app_v2.ico")
-        if not os.path.exists(icon_path):
-            icon_path = get_data_path("app.ico")
+        bitmap_icon_path = get_data_path("app_v3.ico")
+        if not os.path.exists(bitmap_icon_path):
+            bitmap_icon_path = get_data_path("app_v2.ico")
+        if not os.path.exists(bitmap_icon_path):
+            bitmap_icon_path = get_data_path("app.ico")
 
-        if not os.path.exists(icon_path):
-            print(f"Không tìm thấy icon: {icon_path}")
+        photo_icon_path = get_data_path("icon.png")
+        if not os.path.exists(photo_icon_path):
+            photo_icon_path = bitmap_icon_path
+
+        if not os.path.exists(photo_icon_path):
+            print(f"Khong tim thay icon: {photo_icon_path}")
             return
 
         try:
-            self.iconbitmap(icon_path)
+            if os.path.exists(bitmap_icon_path):
+                self.iconbitmap(bitmap_icon_path)
         except Exception:
             pass
 
         try:
-            with Image.open(icon_path) as icon_image:
+            with Image.open(photo_icon_path) as icon_image:
                 icon_variants = []
                 for icon_size in (256, 128, 64, 48, 32, 16):
                     resized = icon_image.resize((icon_size, icon_size), Image.Resampling.LANCZOS)
@@ -98,7 +103,7 @@ class App(ctk.CTk):
                     self.iconphoto(True, *icon_variants)
                     self._icon_photo = icon_variants
         except Exception as e:
-            print("Không load được icon:", e)
+            print("Khong load duoc icon:", e)
 
     def clear_window(self):
         for widget in self.winfo_children():
