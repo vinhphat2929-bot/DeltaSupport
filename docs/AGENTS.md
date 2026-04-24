@@ -1,8 +1,8 @@
 # AGENTS
 
-## Delta Support
+## Delta One
 
-- Day la app desktop noi bo `Delta Support`.
+- Day la app desktop noi bo `Delta One`.
 - Frontend: `CustomTkinter`
 - Backend: `FastAPI`
 - Data that va log that di qua `API` roi backend ghi xuong `SQL Server`

@@ -27,9 +27,10 @@ from services.auth_service import (
     reset_pin_with_otp_api,
 )
 from stores.notification_store import NotificationStore
+from utils.resource_utils import get_data_path
 
 # =========================================================
-# DELTA ASSISTANT - DARK EARTH THEME
+# DELTA ONE - DARK EARTH THEME
 # =========================================================
 
 # ===== APP =====
@@ -194,8 +195,7 @@ class MainAppPage(ctk.CTkFrame):
         return os.path.dirname(os.path.abspath(__file__))
 
     def safe_load_icon(self, filename, size=(24, 24)):
-        base_path = self.get_base_path()
-        file_path = os.path.join(base_path, "data", filename)
+        file_path = get_data_path(filename)
 
         if not os.path.exists(file_path):
             return None
@@ -206,8 +206,7 @@ class MainAppPage(ctk.CTkFrame):
             return None
 
     def safe_load_image_fit(self, filename, max_width, max_height):
-        base_path = self.get_base_path()
-        file_path = os.path.join(base_path, "data", filename)
+        file_path = get_data_path(filename)
 
         if not os.path.exists(file_path):
             return None
@@ -1124,13 +1123,21 @@ class MainAppPage(ctk.CTkFrame):
     # BUILD UI
     # =========================================================
     def build_ui(self):
-        self.logo_image = self.safe_load_image_fit("logo.png", 116, 78)
+        self.logo_image = self.safe_load_image_fit("logo_mark_v3.png", 116, 78)
+        if self.logo_image is None:
+            self.logo_image = self.safe_load_image_fit("logo_mark_v2.png", 116, 78)
+        if self.logo_image is None:
+            self.logo_image = self.safe_load_image_fit("logo.png", 116, 78)
         if self.logo_image is None:
             self.logo_image = self.safe_load_image_fit("app.ico", 116, 78)
         if self.logo_image is None:
             self.logo_image = self.safe_load_image_fit("home.png", 116, 78)
 
-        self.logo_image_compact = self.safe_load_image_fit("logo.png", 84, 52)
+        self.logo_image_compact = self.safe_load_image_fit("logo_mark_v3.png", 84, 52)
+        if self.logo_image_compact is None:
+            self.logo_image_compact = self.safe_load_image_fit("logo_mark_v2.png", 84, 52)
+        if self.logo_image_compact is None:
+            self.logo_image_compact = self.safe_load_image_fit("logo.png", 84, 52)
         if self.logo_image_compact is None:
             self.logo_image_compact = self.safe_load_image_fit("app.ico", 84, 52)
         if self.logo_image_compact is None:
@@ -1499,24 +1506,15 @@ class MainAppPage(ctk.CTkFrame):
         self.right_info_box.grid_propagate(False)
         self.right_info_box.grid_rowconfigure(0, weight=1)
         self.right_info_box.grid_rowconfigure(1, weight=1)
-        self.right_info_box.grid_rowconfigure(2, weight=1)
         self.right_info_box.grid_columnconfigure(0, weight=1)
 
         self.app_name_label = ctk.CTkLabel(
             self.right_info_box,
-            text="Delta Assistant",
-            font=("Segoe UI", 15, "bold"),
+            text="Delta One",
+            font=("Segoe UI", 18, "bold"),
             text_color=TEXT_MAIN,
         )
-        self.app_name_label.grid(row=0, column=0, sticky="", pady=(0, 0))
-
-        self.version_label = ctk.CTkLabel(
-            self.right_info_box,
-            text="Version: 0.0.1",
-            font=("Segoe UI", 10),
-            text_color=TEXT_SUB,
-        )
-        self.version_label.grid(row=1, column=0, sticky="", pady=(0, 0))
+        self.app_name_label.grid(row=0, column=0, sticky="", pady=(0, 1))
 
         self.welcome_label = ctk.CTkLabel(
             self.right_info_box,
@@ -1524,7 +1522,7 @@ class MainAppPage(ctk.CTkFrame):
             font=("Segoe UI", 9, "bold"),
             text_color=TEXT_SUB,
         )
-        self.welcome_label.grid(row=2, column=0, sticky="", pady=(0, 0))
+        self.welcome_label.grid(row=1, column=0, sticky="", pady=(0, 0))
 
 
         # ===== SETTINGS =====
@@ -2228,7 +2226,7 @@ class MainAppPage(ctk.CTkFrame):
 
         ctk.CTkLabel(
             hero_box,
-            text="Welcome to Delta Support",
+            text="Welcome to Delta One",
             font=("Segoe UI", 30, "bold"),
             text_color=TEXT_DARK,
         ).pack(pady=(0, 10))

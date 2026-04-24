@@ -6,10 +6,12 @@ from PIL import Image, ImageTk
 from pages.login_page import LoginPage
 from main_app import MainAppPage
 from splash_screen import SplashScreen
+from utils.resource_utils import get_data_path
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
+APP_USER_MODEL_ID = "AIO.DeltaOne"
 GWL_STYLE = -16
 GA_ROOT = 2
 WS_MAXIMIZEBOX = 0x00010000
@@ -35,6 +37,9 @@ user32.SetWindowPos.argtypes = [
 user32.SetWindowPos.restype = ctypes.c_int
 user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 user32.GetAncestor.restype = ctypes.c_void_p
+shell32 = ctypes.windll.shell32
+shell32.SetCurrentProcessExplicitAppUserModelID.argtypes = [ctypes.c_wchar_p]
+shell32.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.c_int
 
 
 class App(ctk.CTk):
@@ -44,11 +49,13 @@ class App(ctk.CTk):
         self.current_user = None
         self.display_mode = "windowed"
         self._native_style_job = None
+        self._icon_photo = None
 
-        self.title("Delta Assistant")
+        self.title("Delta One")
         self.resizable(True, True)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
+        self.set_windows_app_id()
         self.set_app_icon()
         self.apply_display_mode("windowed", force=True)
         self.after(150, self.schedule_native_window_style_refresh)
@@ -59,19 +66,37 @@ class App(ctk.CTk):
     def get_base_path(self):
         return os.path.dirname(os.path.abspath(__file__))
 
+    def set_windows_app_id(self):
+        try:
+            shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        except Exception:
+            pass
+
     def set_app_icon(self):
-        base_path = self.get_base_path()
-        icon_path = os.path.join(base_path, "data", "app.ico")
+        icon_path = get_data_path("app_v3.ico")
+        if not os.path.exists(icon_path):
+            icon_path = get_data_path("app_v2.ico")
+        if not os.path.exists(icon_path):
+            icon_path = get_data_path("app.ico")
 
         if not os.path.exists(icon_path):
             print(f"Không tìm thấy icon: {icon_path}")
             return
 
         try:
-            icon_image = Image.open(icon_path)
-            icon_photo = ImageTk.PhotoImage(icon_image)
-            self.iconphoto(True, icon_photo)
-            self._icon_photo = icon_photo
+            self.iconbitmap(icon_path)
+        except Exception:
+            pass
+
+        try:
+            with Image.open(icon_path) as icon_image:
+                icon_variants = []
+                for icon_size in (256, 128, 64, 48, 32, 16):
+                    resized = icon_image.resize((icon_size, icon_size), Image.Resampling.LANCZOS)
+                    icon_variants.append(ImageTk.PhotoImage(resized))
+                if icon_variants:
+                    self.iconphoto(True, *icon_variants)
+                    self._icon_photo = icon_variants
         except Exception as e:
             print("Không load được icon:", e)
 

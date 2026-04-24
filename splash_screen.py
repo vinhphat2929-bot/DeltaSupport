@@ -1,13 +1,14 @@
 import os
 import customtkinter as ctk
 from PIL import Image
+from utils.resource_utils import get_data_path
 
 
 class SplashScreen(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
 
-        self.title("Delta Assistant")
+        self.title("Delta One")
         self.geometry("440x320")
         self.resizable(False, False)
         self.configure(fg_color="#1a1210")
@@ -32,7 +33,8 @@ class SplashScreen(ctk.CTkToplevel):
         )
         container.pack(fill="both", expand=True, padx=2, pady=2)
 
-        logo_path = os.path.join("data", "logo.png")
+        logo_path = get_data_path("logo_mark_v3.png")
+        fallback_logo_path = get_data_path("logo.png")
         if os.path.exists(logo_path):
             try:
                 self.logo_image = self.load_image_fit(logo_path, 200, 120)
@@ -46,10 +48,17 @@ class SplashScreen(ctk.CTkToplevel):
                     text_color="#f4e7c1"
                 )
                 fallback.pack(pady=(35, 15))
+        elif os.path.exists(fallback_logo_path):
+            try:
+                self.logo_image = self.load_image_fit(fallback_logo_path, 200, 120)
+                logo_label = ctk.CTkLabel(container, image=self.logo_image, text="")
+                logo_label.pack(pady=(30, 12))
+            except Exception:
+                pass
 
         title = ctk.CTkLabel(
             container,
-            text="Delta Assistant",
+            text="Delta One",
             font=ctk.CTkFont(size=28, weight="bold"),
             text_color="#f4e7c1"
         )

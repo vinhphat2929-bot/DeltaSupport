@@ -1,6 +1,6 @@
-# DeltaSupport
+# Delta One
 
-Desktop app noi bo cho Delta Assistant, viet bang `CustomTkinter`, dung backend `FastAPI` + `SQL Server`.
+Desktop app noi bo cho Delta One, viet bang `CustomTkinter`, dung backend `FastAPI` + `SQL Server`.
 
 ## Vai tro tai lieu
 

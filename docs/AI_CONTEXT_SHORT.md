@@ -1,4 +1,4 @@
-Project: Delta Support
+Project: Delta One
 Stack: CustomTkinter (frontend) + FastAPI (backend) + SQL Server
 
 Architecture:

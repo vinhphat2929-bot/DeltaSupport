@@ -1,4 +1,4 @@
-=== DELTA ASSISTANT DEVELOPMENT LOG ===
+=== DELTA ONE DEVELOPMENT LOG ===
 
 1. VẤN ĐỀ BAN ĐẦU
 - Khi login admin → tự động bật cửa sổ Admin Approval

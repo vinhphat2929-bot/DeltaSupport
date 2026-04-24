@@ -5,6 +5,7 @@ from PIL import Image
 
 from services.auth_service import login_api
 from pages.signup_page import SignUpPage
+from utils.resource_utils import get_data_path
 
 
 class LoginPage(ctk.CTkFrame):
@@ -23,8 +24,7 @@ class LoginPage(ctk.CTkFrame):
         return os.path.dirname(os.path.abspath(__file__))
 
     def load_icon(self, filename, size=(20, 20)):
-        base_path = self.get_base_path()
-        path = os.path.join(base_path, "..", "data", filename)
+        path = get_data_path(filename)
 
         if os.path.exists(path):
             try:
@@ -34,8 +34,7 @@ class LoginPage(ctk.CTkFrame):
         return None
 
     def load_image_fit(self, filename, max_width, max_height):
-        base_path = self.get_base_path()
-        path = os.path.join(base_path, "..", "data", filename)
+        path = get_data_path(filename)
 
         if not os.path.exists(path):
             return None
@@ -68,12 +67,12 @@ class LoginPage(ctk.CTkFrame):
         container.place(relx=0.5, rely=0.5, anchor="center")
         container.pack_propagate(False)
 
-        base_path = self.get_base_path()
-        logo_path = os.path.join(base_path, "..", "data", "logo.png")
+        logo_path = get_data_path("logo_mark_v3.png")
+        fallback_logo_path = get_data_path("logo.png")
 
         if os.path.exists(logo_path):
             try:
-                self.logo_image = self.load_image_fit("logo.png", 210, 130)
+                self.logo_image = self.load_image_fit("logo_mark_v3.png", 210, 130)
                 logo_label = ctk.CTkLabel(container, image=self.logo_image, text="")
                 logo_label.pack(pady=(22, 8))
             except Exception:
@@ -84,14 +83,21 @@ class LoginPage(ctk.CTkFrame):
                     text_color="#f4e7c1",
                 )
                 fallback_logo.pack(pady=(24, 12))
+        elif os.path.exists(fallback_logo_path):
+            try:
+                self.logo_image = self.load_image_fit("logo.png", 210, 130)
+                logo_label = ctk.CTkLabel(container, image=self.logo_image, text="")
+                logo_label.pack(pady=(22, 8))
+            except Exception:
+                pass
 
         title = ctk.CTkLabel(
             container,
-            text="Delta Assistant",
-            font=ctk.CTkFont(size=30, weight="bold"),
+            text="Delta One",
+            font=ctk.CTkFont(size=38, weight="bold"),
             text_color="#f4e7c1",
         )
-        title.pack(pady=(2, 12))
+        title.pack(pady=(4, 18))
 
         # ===== USERNAME =====
         user_frame = ctk.CTkFrame(
@@ -173,14 +179,6 @@ class LoginPage(ctk.CTkFrame):
             command=self.open_signup,
         )
         signup_btn.pack()
-
-        # ===== VERSION =====
-        ctk.CTkLabel(
-            self,
-            text="DA Application - Ver 0.0.1 - By Hoang T",
-            font=ctk.CTkFont(size=11),
-            text_color="#bfa36a",
-        ).place(relx=0.985, rely=0.975, anchor="se")
 
         self.username_entry.bind("<Return>", lambda event: self.handle_login())
         self.password_entry.bind("<Return>", lambda event: self.handle_login())

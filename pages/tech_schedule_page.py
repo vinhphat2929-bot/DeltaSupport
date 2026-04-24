@@ -1,6 +1,6 @@
 # pages/tech_schedule_page.py
 # =========================================================
-# DELTA ASSISTANT - WORK SCHEDULE PAGE (REDESIGNED)
+# DELTA ONE - WORK SCHEDULE PAGE (REDESIGNED)
 # =========================================================
 
 import customtkinter as ctk

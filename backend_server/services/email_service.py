@@ -18,9 +18,9 @@ def send_email(to_email, subject, body):
 
 
 def send_otp_email(to_email, otp_code):
-    subject = "Delta Assistant - Registration Code"
+    subject = "Delta One - Registration Code"
     body = (
-        f"Welcome to Delta Assistant!\n\n"
+        f"Welcome to Delta One!\n\n"
         f"Your registration code is: {otp_code}\n\n"
         f"Staff will NEVER ask for this code.\n"
         f"Do not disclose it to anyone."
@@ -29,7 +29,7 @@ def send_otp_email(to_email, otp_code):
 
 
 def send_pin_reset_otp_email(to_email, otp_code):
-    subject = "Delta Assistant - PIN Reset Code"
+    subject = "Delta One - PIN Reset Code"
     body = (
         "Hello,\n\n"
         f"Your PIN reset code is: {otp_code}\n\n"
@@ -40,12 +40,12 @@ def send_pin_reset_otp_email(to_email, otp_code):
 
 
 def send_approved_email(to_email, full_name, department, role):
-    subject = "Delta Assistant - Account Approved"
+    subject = "Delta One - Account Approved"
     body = (
         f"Hello {full_name},\n\n"
         f"Your account has been approved successfully.\n\n"
         f"Department: {department}\n"
         f"Role: {role}\n\n"
-        f"You can now log in to Delta Assistant."
+        f"You can now log in to Delta One."
     )
     send_email(to_email, subject, body)

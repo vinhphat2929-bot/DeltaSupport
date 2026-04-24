@@ -1,4 +1,4 @@
-# 📘 DeltaSupport — Tài Liệu Kỹ Thuật Toàn Diện
+# 📘 Delta One — Tài Liệu Kỹ Thuật Toàn Diện
 
 > Tài liệu này được tạo ra để giúp bạn và các AI hiểu toàn bộ cấu trúc app, dễ dàng hỏi và nhận trợ giúp mà không bị lạc.
 
@@ -7,7 +7,7 @@
 ## 1. 📋 Project Overview
 
 ### App này dùng để làm gì?
-**DeltaSupport** là một **ứng dụng desktop nội bộ** dành cho đội Tech Support của một công ty cung cấp phần mềm POS cho tiệm nail.
+**Delta One** là một **ứng dụng desktop nội bộ** dành cho đội Tech Support của một công ty cung cấp phần mềm POS cho tiệm nail.
 
 Chức năng chính:
 - **Quản lý Task**: Theo dõi tiến trình Follow merchant, Setup thiết bị, 1st & 2nd Training
@@ -57,7 +57,7 @@ main.py  ←  Chạy lệnh: python main.py
 ## 2. 🗂️ Folder Map
 
 ```
-DeltaSupport/
+DeltaOne/
 │
 ├── main.py                  ← Entry point, khởi động app
 ├── main_app.py              ← Shell chính, navbar, routing các page
