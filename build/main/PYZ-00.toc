@@ -467,6 +467,9 @@
    'C:\\Users\\AIO - MKT '
    'PC\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\annotationlib.py',
    'PYMODULE'),
+  ('app_version',
+   'C:\\Users\\AIO - MKT PC\\Desktop\\DeltaSupport\\app_version.py',
+   'PYMODULE'),
   ('argparse',
    'C:\\Users\\AIO - MKT '
    'PC\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\argparse.py',
@@ -1720,6 +1723,10 @@
    'C:\\Users\\AIO - MKT '
    'PC\\Desktop\\DeltaSupport\\services\\timezone_service.py',
    'PYMODULE'),
+  ('services.update_service',
+   'C:\\Users\\AIO - MKT '
+   'PC\\Desktop\\DeltaSupport\\services\\update_service.py',
+   'PYMODULE'),
   ('setuptools',
    'C:\\Users\\AIO - MKT '
    'PC\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\setuptools\\__init__.py',
@@ -2738,6 +2745,13 @@
   ('webbrowser',
    'C:\\Users\\AIO - MKT '
    'PC\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\webbrowser.py',
+   'PYMODULE'),
+  ('widgets',
+   'C:\\Users\\AIO - MKT PC\\Desktop\\DeltaSupport\\widgets\\__init__.py',
+   'PYMODULE'),
+  ('widgets.update_prompt_dialog',
+   'C:\\Users\\AIO - MKT '
+   'PC\\Desktop\\DeltaSupport\\widgets\\update_prompt_dialog.py',
    'PYMODULE'),
   ('xml',
    'C:\\Users\\AIO - MKT '

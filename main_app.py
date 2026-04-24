@@ -6,6 +6,7 @@ from tkinter import messagebox
 from datetime import datetime
 import time
 
+from app_version import APP_NAME, APP_VERSION
 from pages.pos_page import POSPage
 from pages.sql_page import SQLPage
 from pages.link_data_page import LinkDataPage
@@ -171,6 +172,12 @@ class MainAppPage(ctk.CTkFrame):
         self.old_password_entry = None
         self.new_password_entry = None
         self.confirm_new_password_entry = None
+        self.settings_update_current_label = None
+        self.settings_update_latest_label = None
+        self.settings_update_status_label = None
+        self.settings_check_update_button = None
+        self.settings_update_now_button = None
+        self.settings_update_action_row = None
 
         self.tooltip_window = None
 
@@ -2586,6 +2593,82 @@ class MainAppPage(ctk.CTkFrame):
             text_color=TEXT_MUTED_DARK,
         ).pack(anchor="w", padx=20, pady=(3, 18))
 
+        update_card = ctk.CTkFrame(
+            scroll,
+            fg_color=CONTENT_INNER,
+            corner_radius=18,
+            border_width=1,
+            border_color=CONTENT_BORDER,
+        )
+        update_card.pack(fill="x", pady=8)
+
+        ctk.CTkLabel(
+            update_card,
+            text="App Update",
+            font=("Segoe UI", 16, "bold"),
+            text_color=TEXT_DARK,
+        ).pack(anchor="w", padx=20, pady=(18, 10))
+
+        self.settings_update_current_label = ctk.CTkLabel(
+            update_card,
+            text=f"Current version: {APP_VERSION}",
+            font=("Segoe UI", 14),
+            text_color=TEXT_MUTED_DARK,
+        )
+        self.settings_update_current_label.pack(anchor="w", padx=20, pady=3)
+
+        self.settings_update_latest_label = ctk.CTkLabel(
+            update_card,
+            text="Latest version: -",
+            font=("Segoe UI", 14),
+            text_color=TEXT_MUTED_DARK,
+        )
+        self.settings_update_latest_label.pack(anchor="w", padx=20, pady=3)
+
+        self.settings_update_status_label = ctk.CTkLabel(
+            update_card,
+            text="Chua kiem tra update.",
+            font=("Segoe UI", 13),
+            text_color=TEXT_MUTED_DARK,
+            wraplength=820,
+            justify="left",
+        )
+        self.settings_update_status_label.pack(anchor="w", padx=20, pady=(6, 14))
+
+        update_action_row = ctk.CTkFrame(update_card, fg_color="transparent")
+        update_action_row.pack(anchor="w", padx=20, pady=(0, 18))
+        self.settings_update_action_row = update_action_row
+
+        self.settings_check_update_button = ctk.CTkButton(
+            update_action_row,
+            text="Check for Update",
+            width=180,
+            height=42,
+            corner_radius=12,
+            fg_color=BTN_IDLE,
+            hover_color=BTN_IDLE_HOVER,
+            text_color=TEXT_MAIN,
+            font=("Segoe UI", 14, "bold"),
+            command=self.on_settings_check_update,
+        )
+        self.settings_check_update_button.pack(side="left", padx=(0, 10))
+
+        self.settings_update_now_button = ctk.CTkButton(
+            update_action_row,
+            text="UPDATE",
+            width=180,
+            height=42,
+            corner_radius=12,
+            fg_color=BTN_ACTIVE,
+            hover_color=BTN_ACTIVE_HOVER,
+            text_color=TEXT_DARK,
+            font=("Segoe UI", 14, "bold"),
+            command=self.on_settings_update_now,
+        )
+        self.settings_update_now_button.pack(side="left")
+
+        self.refresh_update_settings_card()
+
         pass_card = ctk.CTkFrame(
             scroll,
             fg_color=CONTENT_INNER,
@@ -2708,6 +2791,73 @@ class MainAppPage(ctk.CTkFrame):
                 font=("Segoe UI", 14, "bold"),
                 command=self.open_admin_manager,
             ).pack(anchor="w", padx=20, pady=(0, 18))
+
+    def refresh_update_settings_card(self):
+        if self.settings_update_current_label is None:
+            return
+
+        update_state = {}
+        if hasattr(self.parent, "get_update_state"):
+            try:
+                update_state = self.parent.get_update_state() or {}
+            except Exception:
+                update_state = {}
+
+        current_version = str(update_state.get("current_version", "") or "").strip() or APP_VERSION
+        latest_version = str(update_state.get("latest_version", "") or "").strip()
+        update_available = bool(update_state.get("update_available"))
+        check_in_progress = bool(update_state.get("check_in_progress"))
+        update_in_progress = bool(update_state.get("update_in_progress"))
+        can_self_update = bool(update_state.get("can_self_update"))
+        status_text = str(update_state.get("status_text", "") or "").strip()
+
+        self.settings_update_current_label.configure(text=f"Current version: {current_version}")
+        self.settings_update_latest_label.configure(
+            text=f"Latest version: {latest_version or current_version}"
+        )
+        self.settings_update_status_label.configure(text=status_text)
+        if status_text:
+            if not self.settings_update_status_label.winfo_manager():
+                self.settings_update_status_label.pack(
+                    anchor="w",
+                    padx=20,
+                    pady=(6, 14),
+                    before=self.settings_update_action_row,
+                )
+            else:
+                self.settings_update_status_label.pack_configure(pady=(6, 14))
+        elif self.settings_update_status_label.winfo_manager():
+            self.settings_update_status_label.pack_forget()
+
+        if self.settings_check_update_button is not None:
+            self.settings_check_update_button.configure(
+                state="disabled" if (check_in_progress or update_in_progress) else "normal",
+                fg_color="#6b5847" if (check_in_progress or update_in_progress) else BTN_IDLE,
+                hover_color="#6b5847" if (check_in_progress or update_in_progress) else BTN_IDLE_HOVER,
+            )
+
+        if self.settings_update_now_button is not None:
+            update_button_enabled = (
+                update_available
+                and can_self_update
+                and not check_in_progress
+                and not update_in_progress
+            )
+            self.settings_update_now_button.configure(
+                text="UPDATE",
+                state="normal" if update_button_enabled else "disabled",
+                fg_color=BTN_ACTIVE if update_button_enabled else "#b8aba0",
+                hover_color=BTN_ACTIVE_HOVER if update_button_enabled else "#b8aba0",
+                text_color=TEXT_DARK if update_button_enabled else "#f4eee7",
+            )
+
+    def on_settings_check_update(self):
+        if hasattr(self.parent, "check_for_updates_from_settings"):
+            self.parent.check_for_updates_from_settings()
+
+    def on_settings_update_now(self):
+        if hasattr(self.parent, "start_cached_update_from_settings"):
+            self.parent.start_cached_update_from_settings()
 
     def open_admin_manager(self):
         if not self.can_access("Admin Approval"):

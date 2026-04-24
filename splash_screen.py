@@ -3,6 +3,7 @@ import tkinter as tk
 
 from PIL import Image, ImageTk
 
+from app_version import APP_NAME
 from utils.resource_utils import get_data_path
 
 
@@ -13,7 +14,7 @@ class SplashScreen(tk.Toplevel):
         self.transparent_color = "#010203"
         self.splash_photo = None
         self.configure(bg=self.transparent_color)
-        self.title("")
+        self.title(APP_NAME)
         self.resizable(False, False)
         self.overrideredirect(True)
         self.attributes("-topmost", True)

@@ -130,7 +130,7 @@ python -m PyInstaller --noconfirm --clean main.spec
 Neu can build truc tiep bang command thay vi `.spec`, dung command co collect package timezone day du:
 
 ```powershell
-python -m PyInstaller --noconfirm --clean --windowed --name main --add-data "data;data" --collect-all tzdata --collect-all zip2tz main.py
+python -m PyInstaller --noconfirm --clean --windowed --name "DELTA ONE" --add-data "data;data" --collect-all tzdata --collect-all zip2tz main.py
 ```
 
 Khi build xong, bundle phai tu chua:
@@ -140,6 +140,32 @@ Khi build xong, bundle phai tu chua:
 
 Khuyen nghi:
 - uu tien build bang `main.spec` vi file nay da tu fallback icon neu repo chua co san `.ico`
+
+### Auto update app
+
+App desktop hien da ho tro check update luc startup:
+- neu co ban moi, user se thay popup `Update` / `Later`
+- bam `Update` tren ban `.exe` se tu tai ban moi, dong app, thay file va mo lai
+
+Backend can cap manifest update qua:
+- `GET /app-update`
+- `GET /app-update/download`
+
+File cau hinh mau nam tai:
+- [backend_server/app_update_config.json](../backend_server/app_update_config.json)
+
+De publish ban moi tren may chu:
+1. build `.exe` moi
+2. copy `.exe` moi len may chu
+3. sua `backend_server/app_update_config.json` tren may chu:
+   - `version`
+   - `release_notes`
+   - `windows_exe_path`
+4. restart backend tren may chu
+
+Luu y:
+- auto update thuc te chi hoat dong tren ban app da build ra `.exe`
+- khi sua backend local cho tinh nang nay, van phai copy file len may chu va restart backend de client thay doi
 
 ## Cau hinh API
 
