@@ -156,11 +156,8 @@ class ProcessLogic:
     @staticmethod
     def get_deadline_time_slots():
         slots = []
-        for hour in range(20, 24):
+        for hour in range(8, 23):
             for minute in (0, 30):
                 slots.append(datetime(2000, 1, 1, hour, minute).strftime("%I:%M %p"))
-        for hour in range(0, 11):
-            for minute in (0, 30):
-                slots.append(datetime(2000, 1, 1, hour, minute).strftime("%I:%M %p"))
-        slots.append(datetime(2000, 1, 1, 11, 0).strftime("%I:%M %p"))
+        slots.append(datetime(2000, 1, 1, 23, 0).strftime("%I:%M %p"))
         return slots

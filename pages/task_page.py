@@ -6,6 +6,7 @@ import customtkinter as ctk
 
 from services.task_service import TASK_STATUSES
 from stores.task_store import TaskStore
+from utils.timezone_utils import build_deadline_preview, format_deadline_hint_text
 
 
 BG_PANEL_INNER = "#fffaf3"
@@ -31,6 +32,22 @@ SUCCESS_BG = "#d4edda"
 SUCCESS_TEXT = "#155724"
 ERROR_BG = "#fde2e2"
 ERROR_TEXT = "#7f1d1d"
+DEFAULT_DEADLINE_TIME = "08:00"
+DEFAULT_DEADLINE_PERIOD = "AM"
+AM_DEADLINE_TIME_VALUES = [
+    datetime(2000, 1, 1, hour, minute).strftime("%I:%M")
+    for hour in range(8, 12)
+    for minute in (0, 30)
+]
+PM_DEADLINE_TIME_VALUES = (
+    [datetime(2000, 1, 1, 12, minute).strftime("%I:%M") for minute in (0, 30)]
+    + [
+        datetime(2000, 1, 1, hour, minute).strftime("%I:%M")
+        for hour in range(13, 23)
+        for minute in (0, 30)
+    ]
+    + [datetime(2000, 1, 1, 23, 0).strftime("%I:%M")]
+)
 
 STATUS_META = {
     "FOLLOW": {"bg": "#2d6cdf", "text": "#ffffff"},
@@ -72,7 +89,14 @@ class TaskRowWidget(ctk.CTkFrame):
         self.handoff_label = ctk.CTkLabel(self, text="", font=("Segoe UI", 11), text_color=TEXT_DARK)
         self.handoff_label.grid(row=0, column=1, rowspan=2, sticky="ew", padx=8)
 
-        self.deadline_label = ctk.CTkLabel(self, text="", font=("Segoe UI", 11), text_color=TEXT_DARK)
+        self.deadline_label = ctk.CTkLabel(
+            self,
+            text="",
+            font=("Segoe UI", 11),
+            text_color=TEXT_DARK,
+            anchor="w",
+            justify="left",
+        )
         self.deadline_label.grid(row=0, column=2, rowspan=2, sticky="ew", padx=8)
 
         self.phone_label = ctk.CTkLabel(self, text="", font=("Segoe UI", 11), text_color=TEXT_DARK)
@@ -98,7 +122,7 @@ class TaskRowWidget(ctk.CTkFrame):
         self.merchant_label.configure(text=self._task.get("merchant_raw", ""))
         self.problem_label.configure(text=self._task.get("problem", ""))
         self.handoff_label.configure(text=self._task.get("handoff_to", "Tech Team"))
-        self.deadline_label.configure(text=self._task.get("deadline", ""))
+        self.deadline_label.configure(text=self._build_deadline_text())
         self.phone_label.configure(text=self._task.get("phone", ""))
 
         meta = STATUS_META.get(self._task.get("status"), {"bg": BTN_ACTIVE, "text": TEXT_DARK})
@@ -113,6 +137,20 @@ class TaskRowWidget(ctk.CTkFrame):
         if self._task.get("is_optimistic"):
             return f"{status} | pending"
         return status
+
+    def _build_deadline_text(self):
+        vnt_text = str(self._task.get("deadline_vn_label", "")).strip()
+        ust_text = (
+            str(self._task.get("deadline_ust_label", "")).strip()
+            or str(self._task.get("deadline_original_label", "")).strip()
+            or str(self._task.get("deadline", "")).strip()
+        )
+        lines = []
+        if vnt_text:
+            lines.append(f"VNT: {vnt_text}")
+        if ust_text:
+            lines.append(f"UST: {ust_text}")
+        return "\n".join(lines)
 
     def _apply_colors(self):
         base_color = BG_SELECTED if self._selected else (BG_ROW_ALT if getattr(self, "_alt", False) else BG_ROW)
@@ -143,6 +181,7 @@ class TaskPage(ctk.CTkFrame):
 
         self.current_user = current_user or {}
         self.current_username = str(self.current_user.get("username", "")).strip()
+        self.current_display_name = str(self.current_user.get("display_name", "")).strip()
         self.current_full_name = str(self.current_user.get("full_name", "")).strip()
 
         self.store = store or TaskStore()
@@ -152,7 +191,7 @@ class TaskPage(ctk.CTkFrame):
         self.search_after_id = None
         self.poll_after_id = None
         self.current_query = ""
-        self.current_display_name = self.current_full_name or self.current_username
+        self.current_display_name = self.current_display_name or self.current_full_name or self.current_username
         self.handoff_options = [{"username": "", "display_name": "Tech Team", "type": "TEAM"}]
         self.follow_show_all = False
         self.follow_include_done = False
@@ -275,15 +314,36 @@ class TaskPage(ctk.CTkFrame):
         self.deadline_date_entry = ctk.CTkEntry(deadline_wrap, width=128, height=36, placeholder_text="DD-MM-YYYY", fg_color=INPUT_BG, border_color=INPUT_BORDER, text_color=TEXT_DARK)
         self.deadline_date_entry.grid(row=1, column=0, sticky="w")
 
-        self.deadline_time_combo = ctk.CTkComboBox(deadline_wrap, values=["08:00", "08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00", "12:30", "01:00", "01:30", "02:00", "02:30", "03:00", "03:30", "04:00", "04:30", "05:00", "05:30", "06:00", "06:30", "07:00", "07:30"], width=108, height=36, fg_color=INPUT_BG, border_color=INPUT_BORDER, button_color=BTN_ACTIVE, button_hover_color=BTN_ACTIVE_HOVER, text_color=TEXT_DARK, dropdown_fg_color=INPUT_BG, dropdown_text_color=TEXT_DARK)
+        self.deadline_time_combo = ctk.CTkComboBox(deadline_wrap, values=list(AM_DEADLINE_TIME_VALUES), width=108, height=36, fg_color=INPUT_BG, border_color=INPUT_BORDER, button_color=BTN_ACTIVE, button_hover_color=BTN_ACTIVE_HOVER, text_color=TEXT_DARK, dropdown_fg_color=INPUT_BG, dropdown_text_color=TEXT_DARK)
         self.deadline_time_combo.grid(row=1, column=1, sticky="w", padx=(10, 8))
-        self.deadline_time_combo.set("02:00")
-        self.deadline_time_combo.configure(command=lambda _v=None: self.refresh_handoff_options_from_deadline())
+        self.deadline_time_combo.set(DEFAULT_DEADLINE_TIME)
+        self.deadline_time_combo.configure(command=self.on_deadline_selection_changed)
 
         self.deadline_period_combo = ctk.CTkComboBox(deadline_wrap, values=["AM", "PM"], width=72, height=36, fg_color=INPUT_BG, border_color=INPUT_BORDER, button_color=BTN_ACTIVE, button_hover_color=BTN_ACTIVE_HOVER, text_color=TEXT_DARK, dropdown_fg_color=INPUT_BG, dropdown_text_color=TEXT_DARK)
         self.deadline_period_combo.grid(row=1, column=2, sticky="w")
-        self.deadline_period_combo.set("AM")
-        self.deadline_period_combo.configure(command=lambda _v=None: self.refresh_handoff_options_from_deadline())
+        self.deadline_period_combo.set(DEFAULT_DEADLINE_PERIOD)
+        self.deadline_period_combo.configure(command=self.on_deadline_selection_changed)
+        self.sync_deadline_time_options(preferred_time=DEFAULT_DEADLINE_TIME)
+
+        self.deadline_original_label = ctk.CTkLabel(
+            deadline_wrap,
+            text="",
+            font=("Segoe UI", 10),
+            text_color=TEXT_MUTED,
+            anchor="w",
+            justify="left",
+        )
+        self.deadline_original_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        self.deadline_helper_label = ctk.CTkLabel(
+            deadline_wrap,
+            text=format_deadline_hint_text(),
+            font=("Segoe UI", 10),
+            text_color=TEXT_MUTED,
+            anchor="w",
+            justify="left",
+        )
+        self.deadline_helper_label.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         self.create_section_label(11, "Note")
         self.note_box = ctk.CTkTextbox(self.detail_card, height=110, fg_color=INPUT_BG, border_color=INPUT_BORDER, border_width=1, text_color=TEXT_DARK, corner_radius=12)
@@ -322,6 +382,7 @@ class TaskPage(ctk.CTkFrame):
 
     def bind_events(self):
         self.search_entry.bind("<KeyRelease>", self.on_search_key_release)
+        self.merchant_name_entry.bind("<KeyRelease>", self.on_deadline_related_input_change)
         self.phone_entry.bind("<KeyRelease>", self.on_phone_input)
         self.deadline_date_entry.bind("<FocusOut>", self.on_deadline_focus_out)
 
@@ -333,7 +394,57 @@ class TaskPage(ctk.CTkFrame):
         self.poll_store_events()
 
     def on_deadline_focus_out(self, _event=None):
+        self.refresh_deadline_preview()
         self.refresh_handoff_options_from_deadline()
+
+    def on_deadline_selection_changed(self, _value=None):
+        self.sync_deadline_time_options()
+        self.refresh_deadline_preview()
+        self.refresh_handoff_options_from_deadline()
+
+    def on_deadline_related_input_change(self, _event=None):
+        self.refresh_deadline_preview()
+
+    def get_deadline_time_values_for_period(self, period_text=""):
+        normalized_period = str(period_text or "").strip().upper()
+        if normalized_period == "PM":
+            return list(PM_DEADLINE_TIME_VALUES)
+        return list(AM_DEADLINE_TIME_VALUES)
+
+    def sync_deadline_time_options(self, preferred_time=""):
+        if not hasattr(self, "deadline_time_combo") or not hasattr(self, "deadline_period_combo"):
+            return
+
+        values = self.get_deadline_time_values_for_period(self.deadline_period_combo.get())
+        current_time = str(preferred_time or self.deadline_time_combo.get() or "").strip()
+        self.deadline_time_combo.configure(values=values)
+        self.deadline_time_combo.set(current_time if current_time in values else (values[0] if values else ""))
+
+    def get_deadline_preview_payload(self):
+        active_task = self.active_task or {}
+        merchant_raw_text = self.merchant_name_entry.get().strip()
+        return build_deadline_preview(
+            deadline_date_text=self.deadline_date_entry.get().strip(),
+            deadline_time_text=self.deadline_time_combo.get().strip(),
+            deadline_period_text=self.deadline_period_combo.get().strip(),
+            merchant_timezone="",
+            merchant_raw_text=merchant_raw_text,
+            merchant_name=active_task.get("merchant_name", merchant_raw_text),
+            zip_code=active_task.get("zip_code", ""),
+            existing_timezone=active_task.get("deadline_timezone", ""),
+            viewer_timezone=getattr(self.store.service, "viewer_timezone", ""),
+        )
+
+    def refresh_deadline_preview(self):
+        preview = self.get_deadline_preview_payload()
+        preview_lines = []
+        if preview.get("deadline_vn_label"):
+            preview_lines.append(f"VNT: {preview.get('deadline_vn_label', '')}")
+        if preview.get("deadline_ust_label") or preview.get("deadline_original_label"):
+            preview_lines.append(
+                f"UST: {preview.get('deadline_ust_label') or preview.get('deadline_original_label', '')}"
+            )
+        self.deadline_original_label.configure(text="\n".join(preview_lines))
 
     def refresh_handoff_options_from_deadline(self):
         if not self.current_username:
@@ -341,11 +452,14 @@ class TaskPage(ctk.CTkFrame):
         deadline_date = self.deadline_date_entry.get().strip()
         if not deadline_date or not self.is_valid_deadline_date(deadline_date):
             return
+        preview = self.get_deadline_preview_payload()
         self.store.load_handoff_options(
             self.current_username,
             task_date=deadline_date,
             task_time=self.deadline_time_combo.get().strip(),
             task_period=self.deadline_period_combo.get().strip(),
+            deadline_timezone=preview.get("deadline_timezone", ""),
+            force=True,
         )
 
     def poll_store_events(self):
@@ -378,6 +492,13 @@ class TaskPage(ctk.CTkFrame):
             self.handoff_from_entry.configure(state="normal")
             self.set_entry_value(self.handoff_from_entry, self.current_display_name)
             self.handoff_from_entry.configure(state="disabled")
+            self.feedback_label.configure(text="", text_color=TEXT_MUTED)
+            return
+
+        if event_type == "handoff_options_failed":
+            message = event.get("message", "Khong load duoc danh sach handoff.")
+            self.feedback_label.configure(text=message, text_color="#b45a4f")
+            messagebox.showerror("Task Follow", message)
             return
 
         if event_type == "task_upserted":
@@ -558,16 +679,24 @@ class TaskPage(ctk.CTkFrame):
         self.handoff_from_entry.configure(state="disabled")
         self.handoff_combo.set(self.active_task.get("handoff_to", "Tech Team"))
         self.status_combo.set(self.active_task.get("status", TASK_STATUSES[0]))
-        self.set_entry_value(self.deadline_date_entry, self.active_task.get("deadline_date", ""))
-        if self.current_username and self.active_task.get("deadline_date"):
+        form_deadline_date = self.active_task.get("deadline_original_date") or self.active_task.get("deadline_date", "")
+        form_deadline_time = self.active_task.get("deadline_original_time") or self.active_task.get("deadline_time", DEFAULT_DEADLINE_TIME)
+        form_deadline_period = self.active_task.get("deadline_original_period") or self.active_task.get("deadline_period", DEFAULT_DEADLINE_PERIOD)
+        self.set_entry_value(self.deadline_date_entry, form_deadline_date)
+        self.deadline_period_combo.set(form_deadline_period)
+        self.sync_deadline_time_options(preferred_time=form_deadline_time)
+        selected_deadline_time = self.deadline_time_combo.get().strip()
+        selected_deadline_period = self.deadline_period_combo.get().strip()
+        if self.current_username and form_deadline_date:
             self.store.load_handoff_options(
                 self.current_username,
-                task_date=self.active_task.get("deadline_date"),
-                task_time=self.active_task.get("deadline_time", ""),
-                task_period=self.active_task.get("deadline_period", ""),
+                task_date=form_deadline_date,
+                task_time=selected_deadline_time,
+                task_period=selected_deadline_period,
+                deadline_timezone=self.active_task.get("deadline_timezone", ""),
+                force=True,
             )
-        self.deadline_time_combo.set(self.active_task.get("deadline_time", "02:00"))
-        self.deadline_period_combo.set(self.active_task.get("deadline_period", "AM"))
+        self.refresh_deadline_preview()
         self.note_box.delete("1.0", "end")
         self.note_box.insert("1.0", self.active_task.get("note", ""))
         self.render_history(self.active_task.get("history") or [])
@@ -588,8 +717,9 @@ class TaskPage(ctk.CTkFrame):
             self.handoff_combo.set(self.handoff_options[0]["display_name"])
         self.status_combo.set(TASK_STATUSES[0])
         self.set_entry_value(self.deadline_date_entry, "")
-        self.deadline_time_combo.set("02:00")
-        self.deadline_period_combo.set("AM")
+        self.deadline_period_combo.set(DEFAULT_DEADLINE_PERIOD)
+        self.sync_deadline_time_options(preferred_time=DEFAULT_DEADLINE_TIME)
+        self.deadline_original_label.configure(text="")
         self.note_box.delete("1.0", "end")
         self.render_history([])
         self.update_form_mode()
@@ -670,6 +800,7 @@ class TaskPage(ctk.CTkFrame):
         payload = {
             "action_by_username": self.current_username,
             "merchant_raw_text": merchant_raw_text,
+            "merchant_timezone": "",
             "phone": self.phone_entry.get().strip(),
             "problem_summary": self.problem_entry.get().strip(),
             "handoff_to_type": handoff_option.get("type", "TEAM"),

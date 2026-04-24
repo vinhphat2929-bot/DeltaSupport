@@ -140,6 +140,8 @@ class SyncCardToTicketLogRequest(BaseModel):
 class TaskFollowUpsertRequest(BaseModel):
     action_by_username: str
     merchant_raw_text: str
+    merchant_timezone: str = ""
+    viewer_timezone: str = ""
     phone: str = ""
     tracking_number: str = ""
     problem_summary: str = ""
@@ -168,3 +170,16 @@ class TaskFollowNotificationReadRequest(BaseModel):
 class TaskFollowNotificationClearRequest(BaseModel):
     action_by_username: str
     task_ids: List[int] = []
+
+
+class TaskReportUpsertRequest(BaseModel):
+    action_by_username: str
+    report_date: str
+    report_time: str
+    merchant: str
+    caller_phone: str
+    problem: str
+    solution: str
+    processing: str
+    technician_username: str = ""
+    technician_display_name: str = ""

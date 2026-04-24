@@ -22,11 +22,17 @@ def get_task_follows_api(action_by, search="", show_all=False, include_done=Fals
         return {"success": False, "message": f"API connection error: {e}"}
 
 
-def get_task_follow_handoff_options_api(action_by):
+def get_task_follow_handoff_options_api(action_by, task_date="", task_time="", task_period="", deadline_timezone=""):
     try:
         response = requests.get(
             f"{API_BASE_URL}/task-follows/handoff-options",
-            params={"action_by": action_by},
+            params={
+                "action_by": action_by,
+                "task_date": str(task_date or "").strip(),
+                "task_time": str(task_time or "").strip(),
+                "task_period": str(task_period or "").strip(),
+                "deadline_timezone": str(deadline_timezone or "").strip(),
+            },
             timeout=20,
         )
         return response.json()

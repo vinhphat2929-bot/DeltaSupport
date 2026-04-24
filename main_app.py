@@ -66,6 +66,7 @@ INPUT_BG = "#f7efe4"
 INPUT_BORDER = "#8b6b4a"
 INPUT_TEXT = "#2a221d"
 INPUT_PLACEHOLDER = "#8d7867"
+DEMO_HIDDEN_NAV_ITEMS = {"POS", "SQL"}
 
 
 class MainAppPage(ctk.CTkFrame):
@@ -76,7 +77,7 @@ class MainAppPage(ctk.CTkFrame):
         self.on_logout = on_logout
         self.user = user or {}
 
-        self.current_page = "POS"
+        self.current_page = "Welcome"
         self.functions_started = False
 
         self.logo_image = None
@@ -1227,7 +1228,7 @@ class MainAppPage(ctk.CTkFrame):
             nav_items = [
                 (name, command, btn_width)
                 for name, command, btn_width in ts_nav_items
-                if self.can_access(name)
+                if self.can_access(name) and name not in DEMO_HIDDEN_NAV_ITEMS
             ]
 
         self.nav_buttons = {}
@@ -2381,7 +2382,7 @@ class MainAppPage(ctk.CTkFrame):
             self.create_section_title(
                 view_root,
                 "Task",
-                "Khu vực task sẽ được build trước.",
+                "Task includes 3 flows: Report, Follow, and Setup / Training.",
             )
             page_host = ctk.CTkFrame(view_root, fg_color="transparent")
             page_host.pack(fill="both", expand=True, padx=18, pady=(18, 18))

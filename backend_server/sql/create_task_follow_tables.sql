@@ -16,6 +16,8 @@ BEGIN
         Status NVARCHAR(100) NOT NULL,
         DeadlineDate DATE NULL,
         DeadlineTime TIME NULL,
+        DeadlineAtUtc DATETIME NULL,
+        DeadlineTimezone NVARCHAR(100) NULL,
         CurrentNote NVARCHAR(MAX) NULL,
         LastUpdatedByUsername NVARCHAR(100) NULL,
         LastUpdatedByDisplayName NVARCHAR(255) NULL,
@@ -58,6 +60,20 @@ IF COL_LENGTH('dbo.TaskFollow', 'TrainingCompletedTabsJson') IS NULL
 BEGIN
     ALTER TABLE dbo.TaskFollow
     ADD TrainingCompletedTabsJson NVARCHAR(MAX) NULL
+END
+GO
+
+IF COL_LENGTH('dbo.TaskFollow', 'DeadlineAtUtc') IS NULL
+BEGIN
+    ALTER TABLE dbo.TaskFollow
+    ADD DeadlineAtUtc DATETIME NULL
+END
+GO
+
+IF COL_LENGTH('dbo.TaskFollow', 'DeadlineTimezone') IS NULL
+BEGIN
+    ALTER TABLE dbo.TaskFollow
+    ADD DeadlineTimezone NVARCHAR(100) NULL
 END
 GO
 
@@ -157,6 +173,18 @@ IF NOT EXISTS (
 BEGIN
     CREATE INDEX IX_TaskFollow_UpdatedAt
     ON dbo.TaskFollow(UpdatedAt)
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_TaskFollow_DeadlineAtUtc'
+      AND object_id = OBJECT_ID('dbo.TaskFollow')
+)
+BEGIN
+    CREATE INDEX IX_TaskFollow_DeadlineAtUtc
+    ON dbo.TaskFollow(DeadlineAtUtc)
 END
 GO
 

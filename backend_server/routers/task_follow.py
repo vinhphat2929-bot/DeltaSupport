@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta
 import threading
 
@@ -11,6 +12,167 @@ from models import (
     TaskFollowNotificationReadRequest,
     TaskFollowUpsertRequest,
 )
+
+EARLY_MORNING_SHIFT_CUTOFF_HOUR = 6
+try:
+    from services.schedule_match_service import (
+        convert_target_to_company_schedule_slot,
+        get_schedule_candidate_dates,
+        get_schedule_time_range_text,
+        schedule_row_matches_target,
+    )
+except ModuleNotFoundError:
+    try:
+        from backend_server.services.schedule_match_service import (
+            convert_target_to_company_schedule_slot,
+            get_schedule_candidate_dates,
+            get_schedule_time_range_text,
+            schedule_row_matches_target,
+        )
+    except ModuleNotFoundError:
+        def normalize_schedule_text(value):
+            return str(value or "").strip()
+
+
+        def coerce_schedule_date(value):
+            if hasattr(value, "date") and not isinstance(value, str):
+                try:
+                    return value.date()
+                except TypeError:
+                    return value
+
+            text = normalize_schedule_text(value)
+            if not text:
+                return None
+
+            for pattern in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+                try:
+                    return datetime.strptime(text, pattern).date()
+                except ValueError:
+                    continue
+            return None
+
+
+        def normalize_meridiem_time_text(value):
+            text = normalize_schedule_text(value).upper()
+            if not text:
+                return ""
+
+            text = re.sub(r"(?<=\d)\.(?=\d)", ":", text)
+            text = text.replace(".", "")
+            text = re.sub(r"\s*:\s*", ":", text)
+            text = re.sub(r"\bA\s*M\b", "AM", text)
+            text = re.sub(r"\bP\s*M\b", "PM", text)
+            text = re.sub(r"(?<=\d)(AM|PM)\b", r" \1", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            return text
+
+
+        def parse_schedule_time_value(value):
+            normalized_text = normalize_meridiem_time_text(value)
+            if not normalized_text:
+                return None
+
+            for pattern in ("%I:%M %p", "%I %p", "%H:%M", "%H"):
+                try:
+                    return datetime.strptime(normalized_text, pattern).time()
+                except ValueError:
+                    continue
+            return None
+
+
+        def parse_schedule_time_range(range_text):
+            text = normalize_schedule_text(range_text)
+            if not text or "-" not in text:
+                return None, None
+
+            parts = re.split(r"\s*-\s*", text, maxsplit=1)
+            if len(parts) != 2:
+                return None, None
+
+            start_time = parse_schedule_time_value(parts[0])
+            end_time = parse_schedule_time_value(parts[1])
+            if start_time is None or end_time is None:
+                return None, None
+            return start_time, end_time
+
+
+        def is_previous_workday_morning_shift(start_time, end_time):
+            if start_time is None or end_time is None:
+                return False
+
+            return (
+                start_time < end_time
+                and start_time.hour < EARLY_MORNING_SHIFT_CUTOFF_HOUR
+                and end_time.hour <= 12
+            )
+
+
+        def get_schedule_candidate_dates(target_date, target_time=None):
+            parsed_target_date = coerce_schedule_date(target_date)
+            if parsed_target_date is None:
+                return []
+
+            candidate_dates = [parsed_target_date]
+            if target_time is not None:
+                candidate_dates.insert(0, parsed_target_date - timedelta(days=1))
+            return candidate_dates
+
+
+        def get_schedule_time_range_text(us_time_range="", vn_time_range=""):
+            return normalize_schedule_text(us_time_range) or normalize_schedule_text(vn_time_range)
+
+
+        def convert_target_to_company_schedule_slot(target_date, target_time=None, source_timezone=""):
+            return coerce_schedule_date(target_date), target_time
+
+
+        def schedule_row_matches_target(work_date, status_code, time_range_text, target_date, target_time=None):
+            if normalize_schedule_text(status_code).upper() != "WORK":
+                return False
+
+            work_date_value = coerce_schedule_date(work_date)
+            target_date_value = coerce_schedule_date(target_date)
+            if work_date_value is None or target_date_value is None:
+                return False
+
+            if target_time is None:
+                return work_date_value == target_date_value
+
+            start_time, end_time = parse_schedule_time_range(time_range_text)
+            if start_time is None or end_time is None:
+                return work_date_value == target_date_value
+
+            shift_start = datetime.combine(work_date_value, start_time)
+            shift_end = datetime.combine(work_date_value, end_time)
+            if shift_end <= shift_start:
+                shift_end += timedelta(days=1)
+            elif (
+                target_date_value == work_date_value + timedelta(days=1)
+                and is_previous_workday_morning_shift(start_time, end_time)
+            ):
+                shift_start += timedelta(days=1)
+                shift_end += timedelta(days=1)
+
+            target_moment = datetime.combine(target_date_value, target_time)
+            return shift_start <= target_moment <= shift_end
+
+try:
+    from services.timezone_service import (
+        convert_local_to_utc,
+        current_local_date,
+        normalize_timezone_name,
+        resolve_deadline_timezone,
+        serialize_deadline_for_view,
+    )
+except ModuleNotFoundError:
+    from backend_server.services.timezone_service import (
+        convert_local_to_utc,
+        current_local_date,
+        normalize_timezone_name,
+        resolve_deadline_timezone,
+        serialize_deadline_for_view,
+    )
 
 router = APIRouter()
 _task_follow_training_columns_lock = threading.Lock()
@@ -45,6 +207,40 @@ def normalize_status(value):
 
 def normalize_tracking_number(value):
     return normalize_text(value).upper()
+
+
+def schedule_config_matches_target(off_days_text, time_range_text, target_date, target_time=None):
+    off_days = [
+        part.strip().upper()
+        for part in normalize_text(off_days_text).split(",")
+        if part.strip()
+    ]
+    target_day_name = target_date.strftime("%a").upper()[:3]
+    previous_date = target_date - timedelta(days=1)
+    previous_day_name = previous_date.strftime("%a").upper()[:3]
+
+    if target_time is None:
+        return target_day_name not in off_days
+
+    if target_day_name not in off_days and schedule_row_matches_target(
+        target_date,
+        "WORK",
+        time_range_text,
+        target_date,
+        target_time,
+    ):
+        return True
+
+    if previous_day_name not in off_days and schedule_row_matches_target(
+        previous_date,
+        "WORK",
+        time_range_text,
+        target_date,
+        target_time,
+    ):
+        return True
+
+    return False
 
 
 def parse_merchant_fields(raw_text):
@@ -309,7 +505,9 @@ def ensure_task_follow_training_columns(cursor):
                 CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingStartedByUsername') IS NULL THEN 1 ELSE 0 END,
                 CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingStartedByDisplayName') IS NULL THEN 1 ELSE 0 END,
                 CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrainingCompletedTabsJson') IS NULL THEN 1 ELSE 0 END,
-                CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrackingNumber') IS NULL THEN 1 ELSE 0 END
+                CASE WHEN COL_LENGTH('dbo.TaskFollow', 'TrackingNumber') IS NULL THEN 1 ELSE 0 END,
+                CASE WHEN COL_LENGTH('dbo.TaskFollow', 'DeadlineAtUtc') IS NULL THEN 1 ELSE 0 END,
+                CASE WHEN COL_LENGTH('dbo.TaskFollow', 'DeadlineTimezone') IS NULL THEN 1 ELSE 0 END
             """
         )
         row = cursor.fetchone()
@@ -367,6 +565,38 @@ def ensure_task_follow_training_columns(cursor):
             BEGIN
                 ALTER TABLE dbo.TaskFollow
                 ADD TrackingNumber NVARCHAR(100) NULL
+            END
+            """
+        )
+        cursor.execute(
+            """
+            IF COL_LENGTH('dbo.TaskFollow', 'DeadlineAtUtc') IS NULL
+            BEGIN
+                ALTER TABLE dbo.TaskFollow
+                ADD DeadlineAtUtc DATETIME NULL
+            END
+            """
+        )
+        cursor.execute(
+            """
+            IF COL_LENGTH('dbo.TaskFollow', 'DeadlineTimezone') IS NULL
+            BEGIN
+                ALTER TABLE dbo.TaskFollow
+                ADD DeadlineTimezone NVARCHAR(100) NULL
+            END
+            """
+        )
+        cursor.execute(
+            """
+            IF NOT EXISTS (
+                SELECT 1
+                FROM sys.indexes
+                WHERE name = 'IX_TaskFollow_DeadlineAtUtc'
+                  AND object_id = OBJECT_ID('dbo.TaskFollow')
+            )
+            BEGIN
+                CREATE INDEX IX_TaskFollow_DeadlineAtUtc
+                ON dbo.TaskFollow(DeadlineAtUtc)
             END
             """
         )
@@ -437,25 +667,33 @@ def parse_deadline_parts(deadline_date, deadline_time, deadline_period):
     return parsed_date, parsed_time, None
 
 
-def serialize_deadline(deadline_date, deadline_time):
-    deadline_date_text = ""
-    deadline_time_text = ""
-    deadline_period = "AM"
-    deadline_full = ""
-
-    if deadline_date:
-        deadline_date_text = deadline_date.strftime("%d-%m-%Y")
-
-    if deadline_time:
-        deadline_time_text = deadline_time.strftime("%I:%M")
-        deadline_period = deadline_time.strftime("%p")
-
-    if deadline_date_text:
-        deadline_full = deadline_date_text
-        if deadline_time_text:
-            deadline_full = f"{deadline_date_text} {deadline_time_text} {deadline_period}"
-
-    return deadline_date_text, deadline_time_text, deadline_period, deadline_full
+def serialize_deadline(
+    deadline_date,
+    deadline_time,
+    deadline_at_utc=None,
+    deadline_timezone="",
+    viewer_timezone="",
+    merchant_raw_text="",
+    merchant_name="",
+    zip_code="",
+):
+    resolved_timezone, timezone_source = resolve_deadline_timezone(
+        explicit_timezone="",
+        merchant_raw_text=merchant_raw_text,
+        merchant_name=merchant_name,
+        zip_code=zip_code,
+        existing_timezone=deadline_timezone,
+        viewer_timezone=viewer_timezone,
+    )
+    serialized = serialize_deadline_for_view(
+        legacy_deadline_date=deadline_date,
+        legacy_deadline_time=deadline_time,
+        deadline_at_utc=deadline_at_utc,
+        deadline_timezone=resolved_timezone,
+        viewer_timezone=viewer_timezone,
+    )
+    serialized["deadline_timezone_source"] = timezone_source
+    return serialized
 
 
 def is_task_in_board_scope(status, deadline_date, today=None):
@@ -473,6 +711,34 @@ def is_task_in_board_window(deadline_date, today=None):
 
     today = today or datetime.now().date()
     return deadline_date < today or (deadline_date >= today and deadline_date <= today + timedelta(days=3))
+
+
+def parse_task_deadline_date_text(value):
+    text = normalize_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%d-%m-%Y").date()
+    except ValueError:
+        return None
+
+
+def parse_task_deadline_datetime_text(deadline_date_text, deadline_time_text, deadline_period_text):
+    date_value = parse_task_deadline_date_text(deadline_date_text)
+    if date_value is None:
+        return None
+
+    time_text = normalize_text(deadline_time_text)
+    period_text = normalize_text(deadline_period_text).upper()
+    if not time_text or period_text not in {"AM", "PM"}:
+        return None
+
+    try:
+        parsed_time = datetime.strptime(f"{time_text} {period_text}", "%I:%M %p").time()
+    except ValueError:
+        return None
+
+    return datetime.combine(date_value, parsed_time)
 
 
 def parse_handoff_summary(handoff_to_type, handoff_to_username, handoff_to_display_name):
@@ -537,10 +803,23 @@ def get_task_recipients(cursor, task_id):
     return recipients
 
 
-def build_task_response(row, history_items=None, recipient_items=None, include_history=True, include_training_form=True):
-    deadline_date_text, deadline_time_text, deadline_period, deadline_full = serialize_deadline(
+def build_task_response(
+    row,
+    history_items=None,
+    recipient_items=None,
+    include_history=True,
+    include_training_form=True,
+    viewer_timezone="",
+):
+    deadline_payload = serialize_deadline(
         row.DeadlineDate,
         row.DeadlineTime,
+        deadline_at_utc=getattr(row, "DeadlineAtUtc", None),
+        deadline_timezone=getattr(row, "DeadlineTimezone", ""),
+        viewer_timezone=viewer_timezone,
+        merchant_raw_text=getattr(row, "MerchantRawText", ""),
+        merchant_name=getattr(row, "MerchantName", ""),
+        zip_code=getattr(row, "ZipCode", ""),
     )
     raw_training_form_json = getattr(row, "TrainingFormJson", "")
     has_training_form = bool(getattr(row, "HasTrainingForm", 0)) or bool(normalize_text(raw_training_form_json))
@@ -584,10 +863,27 @@ def build_task_response(row, history_items=None, recipient_items=None, include_h
         "handoff_to_display_names": handoff_to_display_names,
         "handoff_to": handoff_to_summary,
         "status": normalize_status(row.Status),
-        "deadline": deadline_full,
-        "deadline_date": deadline_date_text,
-        "deadline_time": deadline_time_text,
-        "deadline_period": deadline_period,
+        "deadline": deadline_payload["deadline"],
+        "deadline_date": deadline_payload["deadline_date"],
+        "deadline_time": deadline_payload["deadline_time"],
+        "deadline_period": deadline_payload["deadline_period"],
+        "deadline_original_label": deadline_payload["deadline_original_label"],
+        "deadline_original_date": deadline_payload["deadline_original_date"],
+        "deadline_original_time": deadline_payload["deadline_original_time"],
+        "deadline_original_period": deadline_payload["deadline_original_period"],
+        "deadline_ust_label": deadline_payload["deadline_ust_label"],
+        "deadline_ust_date": deadline_payload["deadline_ust_date"],
+        "deadline_ust_time": deadline_payload["deadline_ust_time"],
+        "deadline_ust_period": deadline_payload["deadline_ust_period"],
+        "deadline_vn_label": deadline_payload["deadline_vn_label"],
+        "deadline_vn_date": deadline_payload["deadline_vn_date"],
+        "deadline_vn_time": deadline_payload["deadline_vn_time"],
+        "deadline_vn_period": deadline_payload["deadline_vn_period"],
+        "deadline_timezone": deadline_payload["deadline_timezone"],
+        "merchant_timezone": deadline_payload["deadline_timezone"],
+        "deadline_timezone_source": deadline_payload["deadline_timezone_source"],
+        "deadline_viewer_timezone": deadline_payload["deadline_viewer_timezone"],
+        "deadline_at_utc": deadline_payload["deadline_at_utc"],
         "note": normalize_text(row.CurrentNote),
         "updated_at": row.UpdatedAt.strftime("%d-%m-%Y %I:%M %p") if row.UpdatedAt else "",
         "training_form": parse_training_form_json(raw_training_form_json) if include_training_form else [],
@@ -604,14 +900,29 @@ def build_task_response(row, history_items=None, recipient_items=None, include_h
     }
 
 
-def format_deadline_label(deadline_date, deadline_time):
-    deadline_date_text, deadline_time_text, deadline_period, deadline_full = serialize_deadline(
+def format_deadline_label(
+    deadline_date,
+    deadline_time,
+    deadline_at_utc=None,
+    deadline_timezone="",
+    viewer_timezone="",
+    merchant_raw_text="",
+    merchant_name="",
+    zip_code="",
+):
+    deadline_payload = serialize_deadline(
         deadline_date,
         deadline_time,
+        deadline_at_utc=deadline_at_utc,
+        deadline_timezone=deadline_timezone,
+        viewer_timezone=viewer_timezone,
+        merchant_raw_text=merchant_raw_text,
+        merchant_name=merchant_name,
+        zip_code=zip_code,
     )
-    if deadline_full:
-        return deadline_full
-    return deadline_date_text
+    if deadline_payload["deadline"]:
+        return deadline_payload["deadline"]
+    return deadline_payload["deadline_date"]
 
 
 def normalize_handoff_targets(cursor, data):
@@ -734,12 +1045,15 @@ def get_task_by_id(cursor, task_id):
             Status,
             DeadlineDate,
             DeadlineTime,
+            DeadlineAtUtc,
+            DeadlineTimezone,
             CurrentNote,
             UpdatedAt,
             TrainingFormJson,
             TrainingStartedAt,
             TrainingStartedByUsername,
-            TrainingStartedByDisplayName
+            TrainingStartedByDisplayName,
+            TrainingCompletedTabsJson
         FROM dbo.TaskFollow
         WHERE TaskID = ? AND IsActive = 1
         """,
@@ -900,7 +1214,13 @@ def insert_assignment_log(cursor, task_id, payload, actor_display_name):
 
 
 @router.get("/task-follows/handoff-options")
-def get_task_follow_handoff_options(action_by: str, task_date: str = "", task_time: str = "", task_period: str = ""):
+def get_task_follow_handoff_options(
+    action_by: str,
+    task_date: str = "",
+    task_time: str = "",
+    task_period: str = "",
+    deadline_timezone: str = "",
+):
     conn = None
     try:
         conn = get_connection()
@@ -919,9 +1239,6 @@ def get_task_follow_handoff_options(action_by: str, task_date: str = "", task_ti
         else:
             effective_date = datetime.now().date()
 
-        effective_day_name = effective_date.strftime("%a").upper()[:3]
-        effective_work_date = effective_date.strftime("%Y-%m-%d")
-
         def parse_ui_time(time_text: str, period_text: str):
             raw_time = normalize_text(time_text)
             raw_period = normalize_text(period_text).upper()
@@ -932,34 +1249,14 @@ def get_task_follow_handoff_options(action_by: str, task_date: str = "", task_ti
             except ValueError:
                 return None
 
-        def parse_time_range(range_text: str):
-            text = normalize_text(range_text)
-            if not text or "-" not in text:
-                return None, None
-            parts = [part.strip() for part in text.split("-", 1)]
-            if len(parts) != 2:
-                return None, None
-            try:
-                start_time = datetime.strptime(parts[0], "%I:%M %p").time()
-                end_time = datetime.strptime(parts[1], "%I:%M %p").time()
-                return start_time, end_time
-            except ValueError:
-                return None, None
-
-        def time_within_shift(target, start, end):
-            if target is None or start is None or end is None:
-                return True
-            start_dt = datetime.combine(datetime(2000, 1, 1).date(), start)
-            end_dt = datetime.combine(datetime(2000, 1, 1).date(), end)
-            target_dt = datetime.combine(datetime(2000, 1, 1).date(), target)
-            if end_dt < start_dt:
-                # overnight shift (e.g. 10 PM - 7 AM)
-                if target_dt < start_dt:
-                    target_dt = target_dt.replace(day=2)
-                end_dt = end_dt.replace(day=2)
-            return start_dt <= target_dt <= end_dt
-
         target_time = parse_ui_time(task_time, task_period)
+        schedule_effective_date, schedule_target_time = convert_target_to_company_schedule_slot(
+            effective_date,
+            target_time,
+            deadline_timezone,
+        )
+        if schedule_effective_date is None:
+            schedule_effective_date = effective_date
 
         cursor.execute(
             """
@@ -991,7 +1288,7 @@ def get_task_follow_handoff_options(action_by: str, task_date: str = "", task_ti
         if has_schedule_setup:
             cursor.execute(
                 """
-                SELECT Username, DisplayName, OffDays
+                SELECT Username, DisplayName, OffDays, USTimeRange, VNTimeRange
                 FROM dbo.TechScheduleEmployeeConfig
                 WHERE IsActive = 1
                   AND Department = ?
@@ -1001,8 +1298,7 @@ def get_task_follow_handoff_options(action_by: str, task_date: str = "", task_ti
             )
             rows = cursor.fetchall()
 
-            schedule_status_map = {}
-            schedule_time_range_map = {}
+            schedule_rows_by_username = {}
             try:
                 cursor.execute(
                     """
@@ -1019,39 +1315,67 @@ def get_task_follow_handoff_options(action_by: str, task_date: str = "", task_ti
             if has_tech_schedule and rows:
                 usernames = [normalize_username(r[0]) for r in rows if normalize_username(r[0])]
                 if usernames:
+                    candidate_dates = get_schedule_candidate_dates(schedule_effective_date, schedule_target_time)
+                    candidate_date_values = [value.strftime("%Y-%m-%d") for value in candidate_dates]
+                    date_placeholders = ",".join(["?"] * len(candidate_dates))
                     placeholders = ",".join(["?"] * len(usernames))
                     cursor.execute(
                         f"""
-                        SELECT Username, StatusCode, VNTimeRange
+                        SELECT Username, WorkDate, StatusCode, USTimeRange, VNTimeRange
                         FROM dbo.TechSchedule
-                        WHERE WorkDate = ?
+                        WHERE WorkDate IN ({date_placeholders})
                           AND Username IN ({placeholders})
                         """,
-                        (effective_work_date, *usernames),
+                        (*candidate_date_values, *usernames),
                     )
                     for schedule_row in cursor.fetchall():
                         schedule_username = normalize_username(schedule_row[0])
                         if not schedule_username:
                             continue
-                        schedule_status_map[schedule_username.lower()] = normalize_text(schedule_row[1]).upper()
-                        schedule_time_range_map[schedule_username.lower()] = normalize_text(schedule_row[2])
+                        schedule_rows_by_username.setdefault(schedule_username.lower(), []).append(
+                            {
+                                "work_date": schedule_row[1],
+                                "status_code": schedule_row[2],
+                                "us_time_range": schedule_row[3],
+                                "vn_time_range": schedule_row[4],
+                            }
+                        )
             for option_row in rows:
                 username = normalize_username(option_row[0])
                 display_name = normalize_text(option_row[1]) or username
                 off_days_text = normalize_text(option_row[2])
-                off_days = [part.strip().upper() for part in off_days_text.split(",") if part.strip()] if off_days_text else []
+                config_us_time_range = normalize_text(option_row[3])
+                config_vn_time_range = normalize_text(option_row[4])
+                config_time_range = get_schedule_time_range_text(
+                    config_us_time_range,
+                    config_vn_time_range,
+                )
                 if not username:
                     continue
-                status_code = schedule_status_map.get(username.lower())
-                if status_code and status_code != "WORK":
-                    continue
-                if target_time is not None:
-                    vn_time_range_text = schedule_time_range_map.get(username.lower(), "")
-                    start_time, end_time = parse_time_range(vn_time_range_text)
-                    if start_time and end_time and not time_within_shift(target_time, start_time, end_time):
+                user_schedule_rows = schedule_rows_by_username.get(username.lower(), [])
+                if user_schedule_rows:
+                    if not any(
+                        schedule_row_matches_target(
+                            schedule_row.get("work_date"),
+                            schedule_row.get("status_code"),
+                            get_schedule_time_range_text(
+                                schedule_row.get("us_time_range"),
+                                schedule_row.get("vn_time_range"),
+                            ),
+                            schedule_effective_date,
+                            schedule_target_time,
+                        )
+                        for schedule_row in user_schedule_rows
+                    ):
                         continue
-                if effective_day_name in off_days:
-                    continue
+                else:
+                    if not schedule_config_matches_target(
+                        off_days_text,
+                        config_time_range,
+                        schedule_effective_date,
+                        schedule_target_time,
+                    ):
+                        continue
                 options.append(
                     {
                         "username": username,
@@ -1075,7 +1399,13 @@ def get_task_follow_handoff_options(action_by: str, task_date: str = "", task_ti
 
 
 @router.get("/task-follows")
-def get_task_follows(action_by: str, search: str = "", show_all: bool = False, include_done: bool = False):
+def get_task_follows(
+    action_by: str,
+    search: str = "",
+    show_all: bool = False,
+    include_done: bool = False,
+    viewer_timezone: str = "",
+):
     conn = None
     try:
         conn = get_connection()
@@ -1091,7 +1421,7 @@ def get_task_follows(action_by: str, search: str = "", show_all: bool = False, i
 
         ensure_task_follow_training_columns(cursor)
 
-        today = datetime.now().date()
+        resolved_viewer_timezone = normalize_timezone_name(viewer_timezone) or ""
         search_keyword = normalize_text(search)
 
         query = """
@@ -1112,6 +1442,8 @@ def get_task_follows(action_by: str, search: str = "", show_all: bool = False, i
                 Status,
                 DeadlineDate,
                 DeadlineTime,
+                DeadlineAtUtc,
+                DeadlineTimezone,
                 CurrentNote,
                 UpdatedAt,
                 CASE
@@ -1130,49 +1462,50 @@ def get_task_follows(action_by: str, search: str = "", show_all: bool = False, i
         if not include_done:
             query += " AND UPPER(Status) <> 'DONE'"
 
-        if board_filter_applied:
-            query += """
-              AND DeadlineDate IS NOT NULL
-              AND (
-                    DeadlineDate < ?
-                    OR (DeadlineDate >= ? AND DeadlineDate <= DATEADD(DAY, 3, ?))
-                  )
-            """
-            params.extend([today, today, today])
-
         if search_keyword:
             query += " AND MerchantName LIKE ?"
             params.append(f"%{search_keyword}%")
 
-        if board_filter_applied:
-            query += """
-                ORDER BY
-                    DeadlineDate ASC,
-                    CASE WHEN DeadlineTime IS NULL THEN 1 ELSE 0 END,
-                    DeadlineTime ASC,
-                    UpdatedAt DESC
-            """
-        else:
-            query += """
-                ORDER BY
-                    CASE WHEN DeadlineDate IS NULL THEN 1 ELSE 0 END,
-                    DeadlineDate ASC,
-                    CASE WHEN DeadlineTime IS NULL THEN 1 ELSE 0 END,
-                    DeadlineTime ASC,
-                    UpdatedAt DESC
-            """
+        query += """
+            ORDER BY
+                UpdatedAt DESC,
+                TaskID DESC
+        """
 
         cursor.execute(query, params)
         rows = cursor.fetchall()
 
-        data = [
-            build_task_response(
+        viewer_today = current_local_date(resolved_viewer_timezone)
+        response_rows = []
+        for row in rows:
+            item = build_task_response(
                 row,
                 include_history=False,
                 include_training_form=False,
+                viewer_timezone=resolved_viewer_timezone,
             )
-            for row in rows
-        ]
+            if board_filter_applied:
+                deadline_date_value = parse_task_deadline_date_text(item.get("deadline_date"))
+                if not is_task_in_board_scope(item.get("status"), deadline_date_value, viewer_today):
+                    continue
+            response_rows.append((row, item))
+
+        response_rows.sort(
+            key=lambda pair: (
+                1 if not normalize_text(pair[1].get("deadline_date")) else 0,
+                parse_task_deadline_date_text(pair[1].get("deadline_date")) or datetime.max.date(),
+                1 if not normalize_text(pair[1].get("deadline_time")) else 0,
+                parse_task_deadline_datetime_text(
+                    pair[1].get("deadline_date"),
+                    pair[1].get("deadline_time"),
+                    pair[1].get("deadline_period"),
+                )
+                or datetime.max,
+                datetime.max - (getattr(pair[0], "UpdatedAt", None) or datetime.min),
+            )
+        )
+        data = [item for _row, item in response_rows]
+
         if board_filter_applied:
             search_scope = "board"
         elif include_done:
@@ -1198,7 +1531,7 @@ def get_task_follows(action_by: str, search: str = "", show_all: bool = False, i
 
 
 @router.get("/task-follows/notifications")
-def get_task_follow_notifications(action_by: str):
+def get_task_follow_notifications(action_by: str, viewer_timezone: str = ""):
     conn = None
     try:
         conn = get_connection()
@@ -1214,6 +1547,7 @@ def get_task_follow_notifications(action_by: str):
             return {"success": False, "message": "User not found."}
         current_department = normalize_text(user_row[1])
         is_technical_support_user = current_department == "Technical Support"
+        resolved_viewer_timezone = normalize_timezone_name(viewer_timezone) or ""
 
         ensure_task_follow_notification_read_table(cursor)
         ensure_task_follow_notification_dismiss_table(cursor)
@@ -1229,6 +1563,8 @@ def get_task_follow_notifications(action_by: str):
                 tf.Status,
                 tf.DeadlineDate,
                 tf.DeadlineTime,
+                tf.DeadlineAtUtc,
+                tf.DeadlineTimezone,
                 tf.HandoffFromDisplayName,
                 tf.UpdatedAt,
                 CASE
@@ -1280,7 +1616,15 @@ def get_task_follow_notifications(action_by: str):
             title = merchant_name if not zip_code else f"{merchant_name} {zip_code}"
             status_text = normalize_status(row.Status) or "FOLLOW"
             handoff_from = normalize_text(row.HandoffFromDisplayName) or "Someone"
-            deadline_label = format_deadline_label(row.DeadlineDate, row.DeadlineTime)
+            deadline_label = format_deadline_label(
+                row.DeadlineDate,
+                row.DeadlineTime,
+                deadline_at_utc=getattr(row, "DeadlineAtUtc", None),
+                deadline_timezone=getattr(row, "DeadlineTimezone", ""),
+                viewer_timezone=resolved_viewer_timezone,
+                merchant_name=merchant_name,
+                zip_code=zip_code,
+            )
             is_read = bool(getattr(row, "IsRead", 0))
             meta_parts = [f"From {handoff_from}", status_text]
             if deadline_label:
@@ -1394,7 +1738,7 @@ def get_task_follow_notification_count(action_by: str):
 
 
 @router.get("/task-follows/{task_id}")
-def get_task_follow_detail(task_id: int, action_by: str = ""):
+def get_task_follow_detail(task_id: int, action_by: str = "", viewer_timezone: str = ""):
     conn = None
     try:
         conn = get_connection()
@@ -1407,7 +1751,15 @@ def get_task_follow_detail(task_id: int, action_by: str = ""):
 
         history = get_task_logs(cursor, task_id)
         recipients = get_task_recipients(cursor, task_id)
-        return {"success": True, "data": build_task_response(row, history, recipients)}
+        return {
+            "success": True,
+            "data": build_task_response(
+                row,
+                history,
+                recipients,
+                viewer_timezone=normalize_timezone_name(viewer_timezone) or "",
+            ),
+        }
 
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -1672,6 +2024,23 @@ def create_task_follow(data: TaskFollowUpsertRequest):
         if deadline_error:
             return {"success": False, "message": deadline_error}
 
+        deadline_timezone, deadline_timezone_source = resolve_deadline_timezone(
+            explicit_timezone=getattr(data, "merchant_timezone", ""),
+            merchant_raw_text=raw_text,
+            merchant_name=merchant_name,
+            zip_code=zip_code,
+            viewer_timezone=getattr(data, "viewer_timezone", ""),
+        )
+        if deadline_timezone_source == "invalid":
+            return {"success": False, "message": "Merchant timezone is invalid."}
+
+        deadline_at_utc = None
+        if deadline_date:
+            deadline_at_utc = convert_local_to_utc(
+                datetime.combine(deadline_date, deadline_time or datetime.min.time()),
+                deadline_timezone,
+            )
+
         actor_display_name = get_user_display_name(cursor, action_by_username) or action_by_username
         handoff_selection = normalize_handoff_targets(cursor, data)
         handoff_to_type = handoff_selection["type"] or "TEAM"
@@ -1712,6 +2081,8 @@ def create_task_follow(data: TaskFollowUpsertRequest):
             status,
             deadline_date,
             deadline_time,
+            deadline_at_utc,
+            deadline_timezone or None,
             note_text,
             action_by_username,
             actor_display_name,
@@ -1742,6 +2113,8 @@ def create_task_follow(data: TaskFollowUpsertRequest):
                     Status,
                     DeadlineDate,
                     DeadlineTime,
+                    DeadlineAtUtc,
+                    DeadlineTimezone,
                     CurrentNote,
                     LastUpdatedByUsername,
                     LastUpdatedByDisplayName,
@@ -1755,7 +2128,7 @@ def create_task_follow(data: TaskFollowUpsertRequest):
                 )
                 OUTPUT INSERTED.TaskID
                 VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), 1)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), 1)
                 """,
                 task_values,
             )
@@ -1788,6 +2161,8 @@ def create_task_follow(data: TaskFollowUpsertRequest):
                         Status,
                         DeadlineDate,
                         DeadlineTime,
+                        DeadlineAtUtc,
+                        DeadlineTimezone,
                         CurrentNote,
                         LastUpdatedByUsername,
                         LastUpdatedByDisplayName,
@@ -1800,7 +2175,7 @@ def create_task_follow(data: TaskFollowUpsertRequest):
                         IsActive
                     )
                     VALUES
-                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), 1)
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), 1)
                     """,
                     (task_id, *task_values),
                 )
@@ -1825,6 +2200,8 @@ def create_task_follow(data: TaskFollowUpsertRequest):
                             Status,
                             DeadlineDate,
                             DeadlineTime,
+                            DeadlineAtUtc,
+                            DeadlineTimezone,
                             CurrentNote,
                             LastUpdatedByUsername,
                             LastUpdatedByDisplayName,
@@ -1838,7 +2215,7 @@ def create_task_follow(data: TaskFollowUpsertRequest):
                         )
                         OUTPUT INSERTED.TaskID
                         VALUES
-                        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), 1)
+                        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), 1)
                         """,
                         task_values,
                     )
@@ -1867,13 +2244,29 @@ def create_task_follow(data: TaskFollowUpsertRequest):
         created_row = get_task_by_id(cursor, task_id)
         created_history = get_task_logs(cursor, task_id)
         created_recipients = get_task_recipients(cursor, task_id)
+        resolved_viewer_timezone = normalize_timezone_name(getattr(data, "viewer_timezone", "")) or ""
+        created_item = (
+            build_task_response(
+                created_row,
+                created_history,
+                created_recipients,
+                viewer_timezone=resolved_viewer_timezone,
+            )
+            if created_row
+            else None
+        )
         is_visible_on_board = bool(
-            created_row and is_task_in_board_scope(created_row.Status, created_row.DeadlineDate)
+            created_item
+            and is_task_in_board_scope(
+                created_item.get("status"),
+                parse_task_deadline_date_text(created_item.get("deadline_date")),
+                current_local_date(resolved_viewer_timezone),
+            )
         )
         return {
             "success": True,
             "task_id": task_id,
-            "data": build_task_response(created_row, created_history, created_recipients) if created_row else None,
+            "data": created_item,
             "visible_on_board": is_visible_on_board,
             "notification_relevant": notification_relevant,
             "recipient_changed": recipient_changed,
@@ -1949,6 +2342,24 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
         if deadline_error:
             return {"success": False, "message": deadline_error}
 
+        deadline_timezone, deadline_timezone_source = resolve_deadline_timezone(
+            explicit_timezone=getattr(data, "merchant_timezone", ""),
+            merchant_raw_text=raw_text,
+            merchant_name=merchant_name,
+            zip_code=zip_code,
+            existing_timezone=getattr(previous_row, "DeadlineTimezone", "") if previous_row else "",
+            viewer_timezone=getattr(data, "viewer_timezone", ""),
+        )
+        if deadline_timezone_source == "invalid":
+            return {"success": False, "message": "Merchant timezone is invalid."}
+
+        deadline_at_utc = None
+        if deadline_date:
+            deadline_at_utc = convert_local_to_utc(
+                datetime.combine(deadline_date, deadline_time or datetime.min.time()),
+                deadline_timezone,
+            )
+
         actor_display_name = get_user_display_name(cursor, action_by_username) or action_by_username
         handoff_selection = normalize_handoff_targets(cursor, data)
         handoff_to_type = handoff_selection["type"] or "TEAM"
@@ -1999,6 +2410,8 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
                 Status = ?,
                 DeadlineDate = ?,
                 DeadlineTime = ?,
+                DeadlineAtUtc = ?,
+                DeadlineTimezone = ?,
                 CurrentNote = ?,
                 LastUpdatedByUsername = ?,
                 LastUpdatedByDisplayName = ?,
@@ -2025,6 +2438,8 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
                 status,
                 deadline_date,
                 deadline_time,
+                deadline_at_utc,
+                deadline_timezone or None,
                 "",
                 action_by_username,
                 actor_display_name,
@@ -2079,13 +2494,29 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
         updated_row = get_task_by_id(cursor, task_id)
         updated_history = get_task_logs(cursor, task_id)
         updated_recipients = get_task_recipients(cursor, task_id)
+        resolved_viewer_timezone = normalize_timezone_name(getattr(data, "viewer_timezone", "")) or ""
+        updated_item = (
+            build_task_response(
+                updated_row,
+                updated_history,
+                updated_recipients,
+                viewer_timezone=resolved_viewer_timezone,
+            )
+            if updated_row
+            else None
+        )
         is_visible_on_board = bool(
-            updated_row and is_task_in_board_scope(updated_row.Status, updated_row.DeadlineDate)
+            updated_item
+            and is_task_in_board_scope(
+                updated_item.get("status"),
+                parse_task_deadline_date_text(updated_item.get("deadline_date")),
+                current_local_date(resolved_viewer_timezone),
+            )
         )
         return {
             "success": True,
             "task_id": task_id,
-            "data": build_task_response(updated_row, updated_history, updated_recipients) if updated_row else None,
+            "data": updated_item,
             "visible_on_board": is_visible_on_board,
             "notification_relevant": notification_relevant,
             "recipient_changed": recipient_changed,

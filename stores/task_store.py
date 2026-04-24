@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 from services.task_service import TaskService
 from stores.base_store import BaseStore
+from utils.timezone_utils import build_deadline_preview
 
 
 class TaskStore(BaseStore):
@@ -37,12 +38,13 @@ class TaskStore(BaseStore):
             self._normalize_search_text(self.search_text if search_text is None else search_text),
         )
 
-    def _handoff_request_key(self, action_by, task_date="", task_time="", task_period=""):
+    def _handoff_request_key(self, action_by, task_date="", task_time="", task_period="", deadline_timezone=""):
         return (
             f"handoff:{str(action_by or '').strip().lower()}:"
             f"{str(task_date or '').strip()}:"
             f"{str(task_time or '').strip()}:"
-            f"{str(task_period or '').strip().upper()}"
+            f"{str(task_period or '').strip().upper()}:"
+            f"{str(deadline_timezone or '').strip()}"
         )
 
     def _snapshot_state(self):
@@ -194,38 +196,59 @@ class TaskStore(BaseStore):
                 daemon=True,
             ).start()
 
-    def load_handoff_options(self, action_by, task_date="", task_time="", task_period=""):
-        key = self._handoff_request_key(action_by, task_date, task_time, task_period)
-        cached = self._handoff_cache.get(key)
-        if cached:
-            self.handoff_options = deepcopy(cached["options"])
-            self.current_display_name = cached["current_display_name"]
-            self._last_handoff_key = key
-            self.push_event(
-                "handoff_options_loaded",
-                options=deepcopy(self.handoff_options),
-                current_display_name=self.current_display_name,
-                source="cache",
-            )
+    def load_handoff_options(
+        self,
+        action_by,
+        task_date="",
+        task_time="",
+        task_period="",
+        deadline_timezone="",
+        force=False,
+    ):
+        key = self._handoff_request_key(
+            action_by,
+            task_date,
+            task_time,
+            task_period,
+            deadline_timezone,
+        )
+        if force:
+            self._handoff_cache.pop(key, None)
+        else:
+            cached = self._handoff_cache.get(key)
+            if cached:
+                self.handoff_options = deepcopy(cached["options"])
+                self.current_display_name = cached["current_display_name"]
+                self._last_handoff_key = key
+                self.push_event(
+                    "handoff_options_loaded",
+                    options=deepcopy(self.handoff_options),
+                    current_display_name=self.current_display_name,
+                    source="cache",
+                )
+                return
+
+        if key in self._handoff_loading_keys:
             return
 
-        if key == self._last_handoff_key or key in self._handoff_loading_keys:
+        if not force and key == self._last_handoff_key:
             return
 
         self._handoff_loading_keys.add(key)
         threading.Thread(
             target=self._handoff_worker,
-            args=(key, action_by, task_date, task_time, task_period),
+            args=(key, action_by, task_date, task_time, task_period, deadline_timezone),
             daemon=True,
         ).start()
 
-    def _handoff_worker(self, key, action_by, task_date, task_time, task_period):
+    def _handoff_worker(self, key, action_by, task_date, task_time, task_period, deadline_timezone):
         try:
             result = self.service.get_handoff_options(
                 action_by,
                 task_date=task_date,
                 task_time=task_time,
                 task_period=task_period,
+                deadline_timezone=deadline_timezone,
             )
             if not result.get("success"):
                 self.push_event("handoff_options_failed", message=result.get("message", "Unable to load handoff options."))
@@ -367,6 +390,25 @@ class TaskStore(BaseStore):
 
     def _build_task_from_payload(self, payload, task_id, actor_display_name, existing=None):
         source = deepcopy(existing or {})
+        deadline_preview = build_deadline_preview(
+            deadline_date_text=payload.get("deadline_date", source.get("deadline_original_date", source.get("deadline_date", ""))),
+            deadline_time_text=payload.get("deadline_time", source.get("deadline_original_time", source.get("deadline_time", "08:00"))),
+            deadline_period_text=payload.get("deadline_period", source.get("deadline_original_period", source.get("deadline_period", "AM"))),
+            merchant_timezone=payload.get("merchant_timezone", source.get("deadline_timezone", "")),
+            merchant_raw_text=payload.get("merchant_raw_text", source.get("merchant_raw", "")),
+            merchant_name=payload.get("merchant_raw_text", source.get("merchant_name", "")),
+            zip_code=source.get("zip_code", ""),
+            existing_timezone=source.get("deadline_timezone", ""),
+            viewer_timezone=getattr(self.service, "viewer_timezone", ""),
+        )
+        deadline_date = payload.get("deadline_date", source.get("deadline_date", ""))
+        deadline_time = payload.get("deadline_time", source.get("deadline_time", "08:00"))
+        deadline_period = payload.get("deadline_period", source.get("deadline_period", "AM"))
+        fallback_deadline_text = ""
+        if deadline_date:
+            fallback_deadline_text = deadline_date
+            if deadline_time:
+                fallback_deadline_text = f"{deadline_date} {deadline_time} {deadline_period}".strip()
         source.update(
             {
                 "task_id": task_id,
@@ -388,9 +430,52 @@ class TaskStore(BaseStore):
                 ),
                 "handoff_to": payload.get("handoff_to_display_name", source.get("handoff_to", "Tech Team")),
                 "status": payload.get("status", source.get("status", "FOLLOW")),
-                "deadline_date": payload.get("deadline_date", source.get("deadline_date", "")),
-                "deadline_time": payload.get("deadline_time", source.get("deadline_time", "02:00")),
-                "deadline_period": payload.get("deadline_period", source.get("deadline_period", "AM")),
+                "deadline": deadline_preview.get("deadline", fallback_deadline_text),
+                "deadline_date": deadline_preview.get("deadline_date", deadline_date),
+                "deadline_time": deadline_preview.get("deadline_time", deadline_time),
+                "deadline_period": deadline_preview.get("deadline_period", deadline_period),
+                "deadline_original_label": deadline_preview.get("deadline_original_label", fallback_deadline_text),
+                "deadline_original_date": deadline_preview.get(
+                    "deadline_original_date",
+                    deadline_date,
+                ),
+                "deadline_original_time": deadline_preview.get(
+                    "deadline_original_time",
+                    deadline_time,
+                ),
+                "deadline_original_period": deadline_preview.get(
+                    "deadline_original_period",
+                    deadline_period,
+                ),
+                "deadline_ust_label": deadline_preview.get(
+                    "deadline_ust_label",
+                    deadline_preview.get("deadline_original_label", fallback_deadline_text),
+                ),
+                "deadline_ust_date": deadline_preview.get(
+                    "deadline_ust_date",
+                    deadline_preview.get("deadline_original_date", deadline_date),
+                ),
+                "deadline_ust_time": deadline_preview.get(
+                    "deadline_ust_time",
+                    deadline_preview.get("deadline_original_time", deadline_time),
+                ),
+                "deadline_ust_period": deadline_preview.get(
+                    "deadline_ust_period",
+                    deadline_preview.get("deadline_original_period", deadline_period),
+                ),
+                "deadline_vn_label": deadline_preview.get("deadline_vn_label", ""),
+                "deadline_vn_date": deadline_preview.get("deadline_vn_date", ""),
+                "deadline_vn_time": deadline_preview.get("deadline_vn_time", ""),
+                "deadline_vn_period": deadline_preview.get("deadline_vn_period", "AM"),
+                "deadline_timezone": deadline_preview.get(
+                    "deadline_timezone",
+                    payload.get("merchant_timezone", source.get("deadline_timezone", "")),
+                ),
+                "deadline_viewer_timezone": deadline_preview.get(
+                    "deadline_viewer_timezone",
+                    source.get("deadline_viewer_timezone", getattr(self.service, "viewer_timezone", "")),
+                ),
+                "deadline_at_utc": deadline_preview.get("deadline_at_utc", source.get("deadline_at_utc", "")),
                 "note": payload.get("note", source.get("note", "")),
                 "training_form": deepcopy(payload.get("training_form", source.get("training_form", []))),
                 "has_training_form": bool(payload.get("training_form") or source.get("training_form") or payload.get("training_started_at") or source.get("training_started_at")),
@@ -411,12 +496,6 @@ class TaskStore(BaseStore):
                 "error": "",
             }
         )
-        if source["deadline_date"]:
-            source["deadline"] = source["deadline_date"]
-            if source["deadline_time"]:
-                source["deadline"] = f"{source['deadline_date']} {source['deadline_time']} {source['deadline_period']}"
-        else:
-            source["deadline"] = ""
         return source
 
     def create_item(self, payload, actor_display_name, action_by):

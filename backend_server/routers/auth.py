@@ -51,6 +51,28 @@ def has_schedule_setup_table(cursor):
     return cursor.fetchone()[0] > 0
 
 
+def get_user_display_name(cursor, username, fallback_full_name=""):
+    username_text = str(username or "").strip()
+    fallback_text = str(fallback_full_name or "").strip()
+    if not username_text:
+        return fallback_text
+
+    if has_schedule_setup_table(cursor):
+        cursor.execute(
+            """
+            SELECT DisplayName
+            FROM dbo.TechScheduleEmployeeConfig
+            WHERE Username = ?
+            """,
+            (username_text,),
+        )
+        row = cursor.fetchone()
+        if row and str(row[0] or "").strip():
+            return str(row[0] or "").strip()
+
+    return fallback_text or username_text
+
+
 @router.post("/login")
 def login(data: LoginRequest):
     conn = None
@@ -136,10 +158,13 @@ def login(data: LoginRequest):
                     "message": "Your account is pending schedule setup or has been marked inactive.",
                 }
 
+        resolved_display_name = get_user_display_name(cursor, db_username, db_full_name)
+
         return {
             "success": True,
             "username": db_username,
             "full_name": db_full_name,
+            "display_name": resolved_display_name,
             "role": db_role,
             "department": db_department,
             "team": "General" if db_team is None or str(db_team).strip() == "" else str(db_team).strip(),

@@ -14,6 +14,7 @@ from pages.process.follow_controller import TaskFollowController
 from pages.process.setup_training_controller import TaskSetupTrainingController
 from pages.process.handlers_ui import ProcessUIHandler
 from pages.task_report_page import TaskReportPage
+from utils.timezone_utils import build_deadline_preview, format_deadline_hint_text
 
 
 class ProcessPage(ctk.CTkFrame):
@@ -61,10 +62,11 @@ class ProcessPage(ctk.CTkFrame):
         self.initial_task_id = initial_task_id
         self.current_user = current_user or {}
         self.current_username = str(self.current_user.get("username", "")).strip()
+        self.current_display_name = str(self.current_user.get("display_name", "")).strip()
         self.current_full_name = str(self.current_user.get("full_name", "")).strip()
         self.current_department = str(self.current_user.get("department", "")).strip()
         self.current_team = str(self.current_user.get("team", "General")).strip() or "General"
-        self.current_display_name = self.current_full_name or self.current_username
+        self.current_display_name = self.current_display_name or self.current_full_name or self.current_username
 
         self.store = TaskStore()
         self.logic = ProcessLogic()
@@ -113,6 +115,14 @@ class ProcessPage(ctk.CTkFrame):
         self.training_visible_range = (0, 100)
         self.follow_board_virtual_buffer_rows = 10
         self.follow_board_suppress_selection_scroll = False
+        self.follow_board_loading_visible = False
+        self.follow_detail_loading_visible = False
+        self.follow_board_loading_overlay = None
+        self.follow_board_loading_label = None
+        self.follow_board_loading_bar = None
+        self.follow_detail_loading_overlay = None
+        self.follow_detail_loading_label = None
+        self.follow_detail_loading_bar = None
         self.follow_search_after_id = None
         self.follow_search_debounce_ms = 300
         self.follow_search_pending_query = ""
@@ -163,10 +173,16 @@ class ProcessPage(ctk.CTkFrame):
             "follow_board_card",
             "follow_canvas",
             "follow_scrollbar",
+            "follow_board_loading_overlay",
+            "follow_board_loading_label",
+            "follow_board_loading_bar",
             "detail_form",
             "follow_header_canvas",
             "follow_scope_label",
             "detail_card",
+            "follow_detail_loading_overlay",
+            "follow_detail_loading_label",
+            "follow_detail_loading_bar",
             "table_card",
             "follow_canvas_wrap",
             "detail_hint",
@@ -224,6 +240,8 @@ class ProcessPage(ctk.CTkFrame):
             "training_visible_range",
             "follow_board_height",
             "follow_board_scroll_enabled",
+            "follow_board_loading_visible",
+            "follow_detail_loading_visible",
             "canvas_row_hits",
             "follow_tasks",
             "filtered_follow_tasks",
@@ -279,7 +297,7 @@ class ProcessPage(ctk.CTkFrame):
 
         self.subtitle_label = ctk.CTkLabel(
             self.header_card,
-            text="Task function will be built here.",
+            text="Task includes Report, Follow, and Setup / Training flows.",
             font=("Segoe UI", 13),
             text_color=self.TEXT_MUTED,
             justify="left",
@@ -532,11 +550,11 @@ class ProcessPage(ctk.CTkFrame):
         self.active_scroll_target = None
         self.rendered_section = section_key
         section_map = {
-            "report": ("Report", "Khu vuc nay se build function report task."),
-            "follow": ("Follow", "Task Follow UI giu nguyen layout cu, chi doi data flow sang store."),
-            "setup_training": ("Setup / Training", "Khu vuc nay se build function setup va training task."),
+            "report": ("Report", "Daily case note form with saved reports, local search, and date filters."),
+            "follow": ("Follow", "Follow merchant tasks with handoff, deadline, note, and notice flow."),
+            "setup_training": ("Setup / Training", "Run I. SET UP HARDWARE, II. SET UP POS, and III. TRAINING for 1st and 2nd Training flow."),
         }
-        title, subtitle = section_map.get(section_key, ("Task", "Task function will be built here."))
+        title, subtitle = section_map.get(section_key, ("Task", "Task includes Report, Follow, and Setup / Training flows."))
 
         if section_key in {"follow", "setup_training"}:
             self.current_task_section = section_key
@@ -544,6 +562,9 @@ class ProcessPage(ctk.CTkFrame):
         if section_key in {"follow", "setup_training"}:
             self.header_card.grid_remove()
             self.bind_follow_mousewheel()
+        elif section_key == "report":
+            self.unbind_follow_mousewheel()
+            self.header_card.grid_remove()
         else:
             self.unbind_follow_mousewheel()
             self.header_card.grid()
@@ -567,6 +588,7 @@ class ProcessPage(ctk.CTkFrame):
             host.grid()
             if self._has_cached_task_section(section_key):
                 self._restore_task_section_context(section_key)
+                self.follow_controller.hide_follow_loading_overlays()
                 self.update_follow_filter_controls()
                 self.update_follow_scope_hint()
                 self.update_follow_form_mode()
@@ -594,6 +616,9 @@ class ProcessPage(ctk.CTkFrame):
             panel_inner=self.BG_PANEL_INNER,
             border=self.BORDER,
             border_soft=self.BORDER_SOFT,
+            current_user=self.current_user,
+            current_username=self.current_username,
+            current_display_name=self.current_display_name,
         )
         report_page.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
 
@@ -646,6 +671,7 @@ class ProcessPage(ctk.CTkFrame):
         self.page_active = False
         self._debug_job("page_hide", "sleep")
         self.close_deadline_popup()
+        self.follow_controller.hide_follow_loading_overlays()
         self.unbind_follow_mousewheel()
         self._cancel_process_jobs(include_poll=True)
 
@@ -922,11 +948,14 @@ class ProcessPage(ctk.CTkFrame):
             if is_popup_target:
                 deadline_date, deadline_time, deadline_period = self.get_confirmed_deadline_parts()
                 if self.current_username and deadline_date and deadline_time and deadline_period in {"AM", "PM"}:
+                    preview = self.get_deadline_preview_payload(deadline_date, deadline_time, deadline_period)
                     self.store.load_handoff_options(
                         self.current_username,
                         task_date=deadline_date,
                         task_time=deadline_time,
                         task_period=deadline_period,
+                        deadline_timezone=preview.get("deadline_timezone", ""),
+                        force=True,
                     )
                     if self.follow_poll_after_id is None:
                         self.poll_follow_store_events()
@@ -952,19 +981,47 @@ class ProcessPage(ctk.CTkFrame):
         except ValueError:
             return self.confirmed_deadline_date, "", ""
 
+    def get_deadline_preview_payload(self, deadline_date="", deadline_time="", deadline_period=""):
+        active_task = self.active_task or {}
+        merchant_raw_text = ""
+        merchant_entry = getattr(self, "merchant_name_entry", None)
+        if merchant_entry is not None:
+            try:
+                merchant_raw_text = merchant_entry.get().strip()
+            except Exception:
+                merchant_raw_text = ""
+        if not merchant_raw_text:
+            merchant_raw_text = str(active_task.get("merchant_raw", "")).strip()
+
+        return build_deadline_preview(
+            deadline_date_text=deadline_date,
+            deadline_time_text=deadline_time,
+            deadline_period_text=deadline_period,
+            merchant_timezone="",
+            merchant_raw_text=merchant_raw_text,
+            merchant_name=active_task.get("merchant_name", merchant_raw_text),
+            zip_code=active_task.get("zip_code", ""),
+            existing_timezone=active_task.get("deadline_timezone", ""),
+            viewer_timezone=getattr(self.store.service, "viewer_timezone", ""),
+        )
+
+    def format_deadline_hint_text(self, preview=None):
+        return format_deadline_hint_text(preview)
+
     def update_deadline_button_text(self):
         if not hasattr(self, "deadline_picker_button"):
             return
 
+        preview = {}
         if self.confirmed_deadline_date and self.confirmed_deadline_time:
             label = f"{self.confirmed_deadline_date} | {self.confirmed_deadline_time}"
             self.deadline_picker_button.configure(text=label)
-            if hasattr(self, "deadline_value_hint"):
-                self.deadline_value_hint.configure(text="")
+            preview = self.get_deadline_preview_payload(*self.get_confirmed_deadline_parts())
         else:
             self.deadline_picker_button.configure(text="Choose Date & Time")
-            if hasattr(self, "deadline_value_hint"):
-                self.deadline_value_hint.configure(text="")
+
+        if hasattr(self, "deadline_value_hint"):
+            self.deadline_value_hint.configure(text=format_deadline_hint_text(preview))
 
     def refresh_handoff_options_from_deadline(self):
         if not self.current_username:
@@ -976,12 +1033,17 @@ class ProcessPage(ctk.CTkFrame):
             return
         if not deadline_time or deadline_period not in {"AM", "PM"}:
             return
+        preview = self.get_deadline_preview_payload(deadline_date, deadline_time, deadline_period)
         self.store.load_handoff_options(
             self.current_username,
             task_date=deadline_date,
             task_time=deadline_time,
             task_period=deadline_period,
+            deadline_timezone=preview.get("deadline_timezone", ""),
+            force=True,
         )
+        if self.follow_poll_after_id is None:
+            self.poll_follow_store_events()
 
     def format_phone(self, digits):
         return self.logic.format_phone(digits)
@@ -1445,8 +1507,11 @@ class ProcessPage(ctk.CTkFrame):
     def get_section_filtered_tasks(self, query=""):
         return self.follow_controller.get_section_filtered_tasks(query)
 
-    def redraw_follow_canvas(self, force=False):
-        return self.follow_controller.redraw_follow_canvas(force=force)
+    def redraw_follow_canvas(self, force=False, masked=False):
+        return self.follow_controller.redraw_follow_canvas(force=force, masked=masked)
+
+    def hide_follow_loading_overlays(self):
+        return self.follow_controller.hide_follow_loading_overlays()
 
     def update_follow_board_height(self, content_height):
         return self.follow_controller.update_follow_board_height(content_height)

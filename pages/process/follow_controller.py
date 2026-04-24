@@ -284,8 +284,34 @@ class TaskFollowController:
             ),
         )
 
+    def _build_deadline_hint_text(self, task=None):
+        vnt_text = str((task or {}).get("deadline_vn_label", "")).strip()
+        ust_text = str((task or {}).get("deadline_ust_label", "")).strip() or str((task or {}).get("deadline_original_label", "")).strip()
+        lines = ["Nhap theo gio bang khach."]
+        if vnt_text:
+            lines.append(f"VNT: {vnt_text}")
+        if ust_text:
+            lines.append(f"UST: {ust_text}")
+        if len(lines) == 1:
+            lines.append("VNT se hien sau khi xac dinh timezone.")
+        return "\n".join(lines)
+
+    def _build_deadline_board_text(self, task):
+        vnt_text = str((task or {}).get("deadline_vn_label", "")).strip()
+        ust_text = (
+            str((task or {}).get("deadline_ust_label", "")).strip()
+            or str((task or {}).get("deadline_original_label", "")).strip()
+            or str((task or {}).get("deadline", "")).strip()
+        )
+        lines = []
+        if vnt_text:
+            lines.append(f"VNT: {vnt_text}")
+        if ust_text:
+            lines.append(f"UST: {ust_text}")
+        return "\n".join(lines)
+
     def _get_board_row_metrics(self, is_training):
-        row_height = 46 if is_training else 44
+        row_height = 58 if is_training else 56
         row_gap = 6
         return {
             "row_height": row_height,
@@ -494,8 +520,11 @@ class TaskFollowController:
         y2 = row_meta["y2"]
         marker_x1 = row_meta["marker_x1"]
         marker_x2 = row_meta["marker_x2"]
+        outer_outline = "#8b5e1a"
+        inner_outline = "#ddb16d"
+        marker_fill = "#a86c1f"
 
-        outline_id = self.page.renderer.draw_round_rect(
+        outer_outline_id = self.page.renderer.draw_round_rect(
             canvas,
             x1 - 1,
             y1 - 1,
@@ -503,18 +532,152 @@ class TaskFollowController:
             y2 + 1,
             12,
             "",
-            "#5b3d1d",
+            outer_outline,
             width=2,
+        )
+        inner_outline_id = self.page.renderer.draw_round_rect(
+            canvas,
+            x1 + 1,
+            y1 + 1,
+            x2 - 1,
+            y2 - 1,
+            10,
+            "",
+            inner_outline,
+            width=1,
         )
         marker_id = canvas.create_rectangle(
             marker_x1,
             y1 + 6,
-            marker_x2,
+            marker_x2 + 1,
             y2 - 6,
-            fill="#5b3d1d",
+            fill=marker_fill,
             outline="",
         )
-        row_meta["active_item_ids"] = [outline_id, marker_id]
+        row_meta["active_item_ids"] = [outer_outline_id, inner_outline_id, marker_id]
+
+    def _create_loading_overlay(self, parent, accent_color):
+        page = self.page
+        overlay = ctk.CTkFrame(
+            parent,
+            fg_color="#fbf5ec",
+            corner_radius=14,
+            border_width=1,
+            border_color="#d7b57d",
+        )
+        content = ctk.CTkFrame(overlay, fg_color="transparent")
+        content.place(relx=0.5, rely=0.5, anchor="center")
+
+        title_label = ctk.CTkLabel(
+            content,
+            text="Dang tai du lieu...",
+            font=("Segoe UI", 15, "bold"),
+            text_color=page.TEXT_DARK,
+            justify="center",
+        )
+        title_label.pack(pady=(0, 8))
+
+        subtitle_label = ctk.CTkLabel(
+            content,
+            text="Vui long cho giao dien render xong.",
+            font=("Segoe UI", 11),
+            text_color=page.TEXT_MUTED,
+            justify="center",
+        )
+        subtitle_label.pack(pady=(0, 12))
+
+        progress = ctk.CTkProgressBar(
+            content,
+            width=180,
+            mode="indeterminate",
+            progress_color=accent_color,
+            fg_color="#eadcc6",
+        )
+        progress.pack()
+        overlay.place_forget()
+        overlay._loading_widgets = {
+            "title": title_label,
+            "subtitle": subtitle_label,
+            "progress": progress,
+        }
+        return overlay
+
+    def _set_loading_overlay_visible(self, overlay, visible, message):
+        page = self.page
+        if overlay is None:
+            return
+        try:
+            if not overlay.winfo_exists():
+                return
+        except Exception:
+            return
+
+        widgets = getattr(overlay, "_loading_widgets", {}) or {}
+        title_label = widgets.get("title")
+        progress = widgets.get("progress")
+
+        if visible:
+            if title_label is not None:
+                title_label.configure(text=str(message or "Dang tai du lieu...").strip())
+            overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+            overlay.lift()
+            if progress is not None:
+                try:
+                    progress.start()
+                except Exception:
+                    pass
+            try:
+                page.update_idletasks()
+            except Exception:
+                pass
+            return
+
+        if progress is not None:
+            try:
+                progress.stop()
+            except Exception:
+                pass
+        overlay.place_forget()
+
+    def _show_board_loading(self, message="Dang tai task board..."):
+        page = self.page
+        page.follow_board_loading_visible = True
+        self._set_loading_overlay_visible(
+            getattr(page, "follow_board_loading_overlay", None),
+            True,
+            message,
+        )
+
+    def _hide_board_loading(self):
+        page = self.page
+        page.follow_board_loading_visible = False
+        self._set_loading_overlay_visible(
+            getattr(page, "follow_board_loading_overlay", None),
+            False,
+            "",
+        )
+
+    def _show_detail_loading(self, message="Dang tai task detail..."):
+        page = self.page
+        page.follow_detail_loading_visible = True
+        self._set_loading_overlay_visible(
+            getattr(page, "follow_detail_loading_overlay", None),
+            True,
+            message,
+        )
+
+    def _hide_detail_loading(self):
+        page = self.page
+        page.follow_detail_loading_visible = False
+        self._set_loading_overlay_visible(
+            getattr(page, "follow_detail_loading_overlay", None),
+            False,
+            "",
+        )
+
+    def hide_follow_loading_overlays(self):
+        self._hide_board_loading()
+        self._hide_detail_loading()
 
     def update_follow_canvas_active_task(self, next_task_id):
         page = self.page
@@ -602,6 +765,21 @@ class TaskFollowController:
         page.follow_canvas_row_meta = {}
         page.follow_canvas_active_task_id = None
         page.reset_follow_board_visible_range()
+        page.follow_board_loading_visible = False
+        page.follow_detail_loading_visible = False
+
+        page.follow_board_loading_overlay = self._create_loading_overlay(
+            page.follow_board_card,
+            accent_color="#8b5e1a",
+        )
+        page.follow_board_loading_label = page.follow_board_loading_overlay._loading_widgets.get("title")
+        page.follow_board_loading_bar = page.follow_board_loading_overlay._loading_widgets.get("progress")
+        page.follow_detail_loading_overlay = self._create_loading_overlay(
+            page.detail_card,
+            accent_color="#7c3aed" if page.is_setup_training_section() else "#8b5e1a",
+        )
+        page.follow_detail_loading_label = page.follow_detail_loading_overlay._loading_widgets.get("title")
+        page.follow_detail_loading_bar = page.follow_detail_loading_overlay._loading_widgets.get("progress")
 
         if page.follow_scrollbar is not None:
             page.follow_scrollbar.configure(command=page.on_follow_canvas_scrollbar)
@@ -667,6 +845,10 @@ class TaskFollowController:
             page._tracking_controls_visible = None
 
             page.phone_entry.bind("<KeyRelease>", page.on_phone_input)
+            page.merchant_name_entry.bind(
+                "<KeyRelease>",
+                lambda _e: page.update_deadline_button_text(),
+            )
             page.tracking_number_entry.bind(
                 "<KeyRelease>",
                 lambda _e: self.update_tracking_controls(refresh_visibility=False),
@@ -949,6 +1131,7 @@ class TaskFollowController:
         page = self.page
         if not hasattr(page, "search_entry"):
             return
+        self._show_board_loading("Dang render task board...")
         try:
             current_task_id = page.active_task.get("task_id") if page.active_task else None
             applied_query = str(getattr(page.store, "search_text", "")).strip().lower()
@@ -962,7 +1145,7 @@ class TaskFollowController:
             page.filtered_follow_tasks = list(current_items)
             page.follow_search_scope = str(getattr(page.store, "search_scope", "board")).strip() or "board"
             self.update_follow_scope_hint()
-            self.redraw_follow_canvas()
+            self.redraw_follow_canvas(masked=False)
 
             if not page.filtered_follow_tasks:
                 self.clear_follow_form()
@@ -990,6 +1173,7 @@ class TaskFollowController:
 
             self.clear_follow_form()
         finally:
+            self._hide_board_loading()
             page.follow_board_suppress_selection_scroll = False
 
     def _has_pending_follow_poll_work(self):
@@ -1067,7 +1251,7 @@ class TaskFollowController:
             page.filtered_follow_tasks = []
             page.follow_search_scope = "board"
             self.update_follow_scope_hint()
-            self.redraw_follow_canvas()
+            self.redraw_follow_canvas(masked=True)
             self.clear_follow_form()
             messagebox.showerror(self.get_task_module_label(), event.get("message", "Khong load duoc task."))
             return
@@ -1110,6 +1294,10 @@ class TaskFollowController:
                     page.select_popup_handoff,
                     popup_colors,
                 )
+            return
+
+        if event_type == "handoff_options_failed":
+            messagebox.showerror(self.get_task_module_label(), event.get("message", "Khong load duoc danh sach handoff."))
             return
 
         if event_type == "task_detail_loaded":
@@ -1269,6 +1457,7 @@ class TaskFollowController:
         deadline_date, deadline_time, deadline_period = page.get_confirmed_deadline_parts()
         form_data = {
             "merchant_name": page.merchant_name_entry.get(),
+            "merchant_timezone": "",
             "status": page.selected_status,
             "note": page.note_box.get("1.0", "end"),
             "tracking_number": page.tracking_number_entry.get(),
@@ -1407,333 +1596,342 @@ class TaskFollowController:
             if self._is_setup_training_item(item)
         ]
 
-    def redraw_follow_canvas(self, force=False):
+    def redraw_follow_canvas(self, force=False, masked=False):
         page = self.page
+        if masked:
+            self._show_board_loading("Dang render task board...")
         if not hasattr(page, "follow_canvas") or not hasattr(page, "follow_header_canvas"):
+            if masked:
+                self._hide_board_loading()
             return
         if not page._can_run_page_job("follow_canvas_render", require_visible=True):
+            if masked:
+                self._hide_board_loading()
             return
-
-        canvas = page.follow_canvas
-        header_canvas = page.follow_header_canvas
         try:
-            page.follow_canvas_last_render_size = (
-                int(canvas.winfo_width()),
-                int(canvas.winfo_height()),
-            )
-        except Exception:
-            page.follow_canvas_last_render_size = (0, 0)
-        try:
-            previous_yview = canvas.yview()[0]
-        except Exception:
-            previous_yview = 0.0
-        try:
-            previous_xview = header_canvas.xview()[0]
-        except Exception:
-            previous_xview = 0.0
-        is_training = page.is_setup_training_section()
-        row_metrics = self._get_board_row_metrics(is_training)
-        row_height = row_metrics["row_height"]
-        row_gap = row_metrics["row_gap"]
-        row_stride = row_metrics["row_stride"]
-        first_row_y = row_metrics["first_row_y"]
-        content_padding = 12 if is_training else 46
-        header_height = 0 if is_training else 62
-        scrollbar_height = 18
-        canvas_width = max(canvas.winfo_width(), 220 if is_training else 640)
-        canvas_height = max(canvas.winfo_height(), 1)
-        tasks = page.filtered_follow_tasks or []
-        active_task_id = page.active_task.get("task_id") if page.active_task else None
-        content_bottom = self._calculate_board_content_bottom(
-            len(tasks),
-            first_row_y,
-            row_stride,
-            row_metrics["bottom_padding"],
-        )
-        total_scroll_height = max(content_bottom, canvas_height)
-        visible_range = self._calculate_visible_task_range(
-            canvas,
-            len(tasks),
-            first_row_y,
-            row_stride,
-            total_scroll_height,
-            buffer_rows=getattr(page, "follow_board_virtual_buffer_rows", 10),
-        )
-        self._set_current_board_visible_range(visible_range)
-        render_signature = self._build_follow_board_signature(
-            tasks,
-            canvas_width,
-            canvas_height,
-            is_training,
-            active_task_id,
-            visible_range,
-        )
-        if not force and render_signature == getattr(page, "follow_board_render_signature", None):
-            return
-
-        page.follow_board_render_signature = render_signature
-        canvas.delete("all")
-        header_canvas.delete("all")
-        page.canvas_row_hits = []
-
-        if is_training:
-            header_canvas.grid_remove()
-        else:
-            header_canvas.grid()
-
-        if not is_training:
-            header_ratios = [
-                ("Merchant", 0.25),
-                ("Phone", 0.13),
-                ("Problem", 0.22),
-                ("Assignee", 0.12),
-                ("Deadline", 0.14),
-                ("Status", 0.14),
-            ]
-            min_widths = {
-                "Merchant": 155,
-                "Phone": 105,
-                "Problem": 145,
-                "Assignee": 100,
-                "Deadline": 120,
-                "Status": 145,
-            }
-            x = 14
-            y = 4
-            right_padding = 18
-            target_width = max(sum(min_widths.values()), canvas_width - (x * 2) - right_padding)
-            resolved_headers = []
-            used_width = 0
-
-            for index, (label, ratio) in enumerate(header_ratios):
-                if index == len(header_ratios) - 1:
-                    col_width = max(min_widths[label], target_width - used_width)
-                else:
-                    col_width = max(min_widths[label], int(target_width * ratio))
-                resolved_headers.append((label, col_width))
-                used_width += col_width
-
-            total_width = sum(col_width for _label, col_width in resolved_headers)
-            board_right = x + total_width
-
-            page.renderer.draw_round_rect(
-                header_canvas,
-                x,
-                6,
-                board_right,
-                6 + row_height,
-                14,
-                page.CANVAS_HEADER,
-                page.CANVAS_HEADER,
-            )
-
-            current_x = x
-            for label, col_width in resolved_headers:
-                header_canvas.create_text(
-                    current_x + (col_width / 2),
-                    6 + row_height / 2,
-                    text=label,
-                    anchor="center",
-                    fill="#f7eedf",
-                    font=("Segoe UI", 11, "bold"),
+            canvas = page.follow_canvas
+            header_canvas = page.follow_header_canvas
+            try:
+                page.follow_canvas_last_render_size = (
+                    int(canvas.winfo_width()),
+                    int(canvas.winfo_height()),
                 )
-                current_x += col_width
-
-            header_canvas.configure(scrollregion=(0, 0, board_right + 10, row_height + 14))
-            header_canvas.xview_moveto(previous_xview)
-            y = first_row_y
-        else:
-            x = 10
-            y = first_row_y
-            board_right = max(x + 172, canvas_width - 14)
-            resolved_headers = []
-
-        content_height = header_height + content_padding
-        if tasks:
-            content_height += len(tasks) * row_height + max(0, len(tasks) - 1) * row_gap
-        self.update_follow_board_height(content_height + scrollbar_height)
-
-        if not tasks:
-            empty_text = self.get_empty_board_text()
-            if page.follow_show_all and page.follow_include_done:
-                empty_text = self.get_empty_board_text(show_all=True, include_done=True)
-            elif page.follow_show_all:
-                empty_text = self.get_empty_board_text(show_all=True)
-            elif page.search_entry.get().strip():
-                empty_text = self.get_empty_board_text(has_search=True)
-            canvas.create_text(
-                x + 16,
-                y + 24,
-                text=empty_text,
-                anchor="w",
-                fill=page.TEXT_MUTED,
-                font=("Segoe UI", 12),
+            except Exception:
+                page.follow_canvas_last_render_size = (0, 0)
+            try:
+                previous_yview = canvas.yview()[0]
+            except Exception:
+                previous_yview = 0.0
+            try:
+                previous_xview = header_canvas.xview()[0]
+            except Exception:
+                previous_xview = 0.0
+            is_training = page.is_setup_training_section()
+            row_metrics = self._get_board_row_metrics(is_training)
+            row_height = row_metrics["row_height"]
+            row_gap = row_metrics["row_gap"]
+            row_stride = row_metrics["row_stride"]
+            first_row_y = row_metrics["first_row_y"]
+            content_padding = 12 if is_training else 46
+            header_height = 0 if is_training else 62
+            scrollbar_height = 18
+            canvas_width = max(canvas.winfo_width(), 220 if is_training else 640)
+            canvas_height = max(canvas.winfo_height(), 1)
+            tasks = page.filtered_follow_tasks or []
+            active_task_id = page.active_task.get("task_id") if page.active_task else None
+            content_bottom = self._calculate_board_content_bottom(
+                len(tasks),
+                first_row_y,
+                row_stride,
+                row_metrics["bottom_padding"],
             )
-            canvas.configure(scrollregion=(0, 0, board_right + 10, y + 70))
-            header_canvas.configure(scrollregion=(0, 0, board_right + 10, row_height + 14))
-            page.follow_board_scroll_enabled = False
-
-        page.follow_canvas_row_meta = {}
-        page.follow_canvas_active_task_id = active_task_id
-        visible_start, visible_end = visible_range
-        visible_tasks = tasks[visible_start:visible_end]
-        for index, task in enumerate(visible_tasks, start=visible_start):
-            row_top = y + (index * row_stride)
-            row_bottom = row_top + row_height
-            is_active = task.get("task_id") == active_task_id
-            if is_training:
-                row_fill, row_text = self.get_task_row_theme(task, index)
-                border_color = "#e5d0ad"
-            else:
-                row_fill, row_text = self.get_task_row_theme(task, index)
-                border_color = "#e5d0ad"
-            border_width = 1
-
-            page.renderer.draw_round_rect(
+            total_scroll_height = max(content_bottom, canvas_height)
+            visible_range = self._calculate_visible_task_range(
                 canvas,
-                x,
-                row_top,
-                board_right,
-                row_bottom,
-                12,
-                row_fill,
-                border_color,
-                width=border_width,
+                len(tasks),
+                first_row_y,
+                row_stride,
+                total_scroll_height,
+                buffer_rows=getattr(page, "follow_board_virtual_buffer_rows", 10),
             )
+            self._set_current_board_visible_range(visible_range)
+            render_signature = self._build_follow_board_signature(
+                tasks,
+                canvas_width,
+                canvas_height,
+                is_training,
+                active_task_id,
+                visible_range,
+            )
+            if not force and render_signature == getattr(page, "follow_board_render_signature", None):
+                return
+
+            page.follow_board_render_signature = render_signature
+            canvas.delete("all")
+            header_canvas.delete("all")
+            page.canvas_row_hits = []
 
             if is_training:
-                stage_val = str(task.get("status", "")).strip().upper()
-                stage_text = "Done" if stage_val == "DONE" else ("2nd" if stage_val == "2ND TRAINING" else "1st")
-                stage_color = "#7c3aed" if stage_val == "SET UP & TRAINING" else ("#0f766e" if stage_val == "2ND TRAINING" else "#dc2626")
-                assignee_text = str(task.get("handoff_to", "")).strip() or "Tech Team"
-                merchant_label = str(task.get("merchant_raw", "")).strip()
-                zip_code = str(task.get("zip_code", "")).strip()
-                if zip_code and zip_code not in merchant_label:
-                    merchant_label = f"{merchant_label} {zip_code}".strip()
-                canvas.create_rectangle(x + 8, row_top + 8, x + 11, row_bottom - 8, fill=stage_color, outline="")
-                canvas.create_text(
-                    x + 18,
-                    row_top + 13,
-                    text=merchant_label,
-                    anchor="w",
-                    width=max(72, board_right - x - 28),
-                    fill=row_text,
-                    font=("Segoe UI", 10, "bold"),
-                )
-                deadline_text = str(task.get("deadline", "")).strip()
-                deadline_text = f"Due: {deadline_text}" if deadline_text else "Due: -"
-                badge_width = 40 if stage_text == "Done" else 34
-                badge_x2 = board_right - 10
-                badge_x1 = badge_x2 - badge_width
-                assignee_width = min(92, max(52, (len(assignee_text) * 6) + 18))
-                assignee_x2 = board_right - 10
-                assignee_x1 = assignee_x2 - assignee_width
-                assignee_y1 = row_top + 6
-                assignee_y2 = assignee_y1 + 14
-                canvas.create_text(
-                    x + 18,
-                    row_top + 32,
-                    text=deadline_text,
-                    anchor="w",
-                    width=max(44, assignee_x1 - x - 24),
-                    fill=row_text,
-                    font=("Segoe UI", 8),
-                )
-                page.renderer.draw_round_rect(
-                    canvas,
-                    assignee_x1,
-                    assignee_y1,
-                    assignee_x2,
-                    assignee_y2,
-                    6,
-                    "#f4ead8",
-                    "#d8b57b",
-                )
-                canvas.create_text(
-                    (assignee_x1 + assignee_x2) / 2,
-                    (assignee_y1 + assignee_y2) / 2,
-                    text=assignee_text,
-                    fill="#6b4f35",
-                    font=("Segoe UI", 7, "bold"),
-                    width=max(24, assignee_width - 8),
-                )
-                badge_y1 = row_top + 24
-                badge_y2 = row_top + 38
-                page.renderer.draw_round_rect(canvas, badge_x1, badge_y1, badge_x2, badge_y2, 7, stage_color, stage_color)
-                canvas.create_text(
-                    (badge_x1 + badge_x2) / 2,
-                    (badge_y1 + badge_y2) / 2,
-                    text=stage_text,
-                    fill="#ffffff",
-                    font=("Segoe UI", 8, "bold"),
-                )
+                header_canvas.grid_remove()
             else:
-                values = [
-                    task["merchant_raw"],
-                    task["phone"],
-                    task["problem"],
-                    task["handoff_to"],
-                    task["deadline"],
+                header_canvas.grid()
+
+            if not is_training:
+                header_ratios = [
+                    ("Merchant", 0.25),
+                    ("Phone", 0.13),
+                    ("Problem", 0.22),
+                    ("Assignee", 0.12),
+                    ("Deadline", 0.14),
+                    ("Status", 0.14),
                 ]
+                min_widths = {
+                    "Merchant": 155,
+                    "Phone": 105,
+                    "Problem": 145,
+                    "Assignee": 100,
+                    "Deadline": 120,
+                    "Status": 145,
+                }
+                x = 14
+                y = 4
+                right_padding = 18
+                target_width = max(sum(min_widths.values()), canvas_width - (x * 2) - right_padding)
+                resolved_headers = []
+                used_width = 0
+
+                for index, (label, ratio) in enumerate(header_ratios):
+                    if index == len(header_ratios) - 1:
+                        col_width = max(min_widths[label], target_width - used_width)
+                    else:
+                        col_width = max(min_widths[label], int(target_width * ratio))
+                    resolved_headers.append((label, col_width))
+                    used_width += col_width
+
+                total_width = sum(col_width for _label, col_width in resolved_headers)
+                board_right = x + total_width
+
+                page.renderer.draw_round_rect(
+                    header_canvas,
+                    x,
+                    6,
+                    board_right,
+                    6 + row_height,
+                    14,
+                    page.CANVAS_HEADER,
+                    page.CANVAS_HEADER,
+                )
+
                 current_x = x
-                widths_without_status = [col_width for _label, col_width in resolved_headers[:-1]]
-                for col_index, (value, col_width) in enumerate(zip(values, widths_without_status)):
-                    anchor = "w" if col_index == 0 else "center"
-                    text_x = current_x + 10 if col_index == 0 else current_x + (col_width / 2)
-                    canvas.create_text(
-                        text_x,
-                        row_top + row_height / 2,
-                        text=value,
-                        anchor=anchor,
-                        width=col_width - (20 if col_index == 0 else 12),
-                        fill=row_text,
-                        font=("Segoe UI", 9, "bold"),
+                for label, col_width in resolved_headers:
+                    header_canvas.create_text(
+                        current_x + (col_width / 2),
+                        6 + row_height / 2,
+                        text=label,
+                        anchor="center",
+                        fill="#f7eedf",
+                        font=("Segoe UI", 11, "bold"),
                     )
                     current_x += col_width
 
-                status_meta = page.logic.status_meta.get(task["status"], {"bg": page.BTN_ACTIVE, "text": page.TEXT_DARK})
-                pill_x1 = current_x + 8
-                pill_y1 = row_top + 9
-                pill_x2 = board_right - 8
-                pill_y2 = row_bottom - 9
-                page.renderer.draw_round_rect(canvas, pill_x1, pill_y1, pill_x2, pill_y2, 12, status_meta["bg"], status_meta["bg"])
-                label_text = task["status"]
-                if task.get("is_saving"):
-                    label_text = f"{label_text} *"
+                header_canvas.configure(scrollregion=(0, 0, board_right + 10, row_height + 14))
+                header_canvas.xview_moveto(previous_xview)
+                y = first_row_y
+            else:
+                x = 10
+                y = first_row_y
+                board_right = max(x + 172, canvas_width - 14)
+                resolved_headers = []
+
+            content_height = header_height + content_padding
+            if tasks:
+                content_height += len(tasks) * row_height + max(0, len(tasks) - 1) * row_gap
+            self.update_follow_board_height(content_height + scrollbar_height)
+
+            if not tasks:
+                empty_text = self.get_empty_board_text()
+                if page.follow_show_all and page.follow_include_done:
+                    empty_text = self.get_empty_board_text(show_all=True, include_done=True)
+                elif page.follow_show_all:
+                    empty_text = self.get_empty_board_text(show_all=True)
+                elif page.search_entry.get().strip():
+                    empty_text = self.get_empty_board_text(has_search=True)
                 canvas.create_text(
-                    (pill_x1 + pill_x2) / 2,
-                    (pill_y1 + pill_y2) / 2,
-                    text=label_text,
-                    fill=status_meta["text"],
-                    font=("Segoe UI", 7, "bold"),
-                    width=max(10, pill_x2 - pill_x1 - 10),
+                    x + 16,
+                    y + 24,
+                    text=empty_text,
+                    anchor="w",
+                    fill=page.TEXT_MUTED,
+                    font=("Segoe UI", 12),
+                )
+                canvas.configure(scrollregion=(0, 0, board_right + 10, y + 70))
+                header_canvas.configure(scrollregion=(0, 0, board_right + 10, row_height + 14))
+                page.follow_board_scroll_enabled = False
+
+            page.follow_canvas_row_meta = {}
+            page.follow_canvas_active_task_id = active_task_id
+            visible_start, visible_end = visible_range
+            visible_tasks = tasks[visible_start:visible_end]
+            for index, task in enumerate(visible_tasks, start=visible_start):
+                row_top = y + (index * row_stride)
+                row_bottom = row_top + row_height
+                is_active = task.get("task_id") == active_task_id
+                if is_training:
+                    row_fill, row_text = self.get_task_row_theme(task, index)
+                    border_color = "#e5d0ad"
+                else:
+                    row_fill, row_text = self.get_task_row_theme(task, index)
+                    border_color = "#e5d0ad"
+                border_width = 1
+
+                page.renderer.draw_round_rect(
+                    canvas,
+                    x,
+                    row_top,
+                    board_right,
+                    row_bottom,
+                    12,
+                    row_fill,
+                    border_color,
+                    width=border_width,
                 )
 
-            row_meta = {
-                "task_id": task.get("task_id"),
-                "x1": x,
-                "y1": row_top,
-                "x2": board_right,
-                "y2": row_bottom,
-                "marker_x1": x + 4,
-                "marker_x2": x + 8,
-                "active_item_ids": [],
-            }
-            page.follow_canvas_row_meta[task.get("task_id")] = row_meta
-            if is_active:
-                self._set_row_active_state(canvas, row_meta, True)
-            page.canvas_row_hits.append((row_top, row_bottom, task))
+                if is_training:
+                    stage_val = str(task.get("status", "")).strip().upper()
+                    stage_text = "Done" if stage_val == "DONE" else ("2nd" if stage_val == "2ND TRAINING" else "1st")
+                    stage_color = "#7c3aed" if stage_val == "SET UP & TRAINING" else ("#0f766e" if stage_val == "2ND TRAINING" else "#dc2626")
+                    assignee_text = str(task.get("handoff_to", "")).strip() or "Tech Team"
+                    merchant_label = str(task.get("merchant_raw", "")).strip()
+                    zip_code = str(task.get("zip_code", "")).strip()
+                    if zip_code and zip_code not in merchant_label:
+                        merchant_label = f"{merchant_label} {zip_code}".strip()
+                    canvas.create_rectangle(x + 8, row_top + 8, x + 11, row_bottom - 8, fill=stage_color, outline="")
+                    canvas.create_text(
+                        x + 18,
+                        row_top + 13,
+                        text=merchant_label,
+                        anchor="w",
+                        width=max(72, board_right - x - 28),
+                        fill=row_text,
+                        font=("Segoe UI", 10, "bold"),
+                    )
+                    deadline_text = self._build_deadline_board_text(task)
+                    deadline_text = f"Due: {deadline_text}" if deadline_text else "Due: -"
+                    badge_width = 40 if stage_text == "Done" else 34
+                    badge_x2 = board_right - 10
+                    badge_x1 = badge_x2 - badge_width
+                    assignee_width = min(92, max(52, (len(assignee_text) * 6) + 18))
+                    assignee_x2 = board_right - 10
+                    assignee_x1 = assignee_x2 - assignee_width
+                    assignee_y1 = row_top + 6
+                    assignee_y2 = assignee_y1 + 14
+                    canvas.create_text(
+                        x + 18,
+                        row_top + 34,
+                        text=deadline_text,
+                        anchor="w",
+                        width=max(44, assignee_x1 - x - 24),
+                        fill=row_text,
+                        font=("Segoe UI", 8),
+                    )
+                    page.renderer.draw_round_rect(
+                        canvas,
+                        assignee_x1,
+                        assignee_y1,
+                        assignee_x2,
+                        assignee_y2,
+                        6,
+                        "#f4ead8",
+                        "#d8b57b",
+                    )
+                    canvas.create_text(
+                        (assignee_x1 + assignee_x2) / 2,
+                        (assignee_y1 + assignee_y2) / 2,
+                        text=assignee_text,
+                        fill="#6b4f35",
+                        font=("Segoe UI", 7, "bold"),
+                        width=max(24, assignee_width - 8),
+                    )
+                    badge_y1 = row_top + 38
+                    badge_y2 = row_top + 52
+                    page.renderer.draw_round_rect(canvas, badge_x1, badge_y1, badge_x2, badge_y2, 7, stage_color, stage_color)
+                    canvas.create_text(
+                        (badge_x1 + badge_x2) / 2,
+                        (badge_y1 + badge_y2) / 2,
+                        text=stage_text,
+                        fill="#ffffff",
+                        font=("Segoe UI", 8, "bold"),
+                    )
+                else:
+                    values = [
+                        task["merchant_raw"],
+                        task["phone"],
+                        task["problem"],
+                        task["handoff_to"],
+                        self._build_deadline_board_text(task),
+                    ]
+                    current_x = x
+                    widths_without_status = [col_width for _label, col_width in resolved_headers[:-1]]
+                    for col_index, (value, col_width) in enumerate(zip(values, widths_without_status)):
+                        anchor = "w" if col_index == 0 else "center"
+                        text_x = current_x + 10 if col_index == 0 else current_x + (col_width / 2)
+                        canvas.create_text(
+                            text_x,
+                            row_top + row_height / 2,
+                            text=value,
+                            anchor=anchor,
+                            width=col_width - (20 if col_index == 0 else 12),
+                            fill=row_text,
+                            font=("Segoe UI", 8 if col_index == 4 else 9, "bold"),
+                        )
+                        current_x += col_width
 
-        try:
-            visible_height = max(1, canvas.winfo_height())
-        except Exception:
-            visible_height = 1
+                    status_meta = page.logic.status_meta.get(task["status"], {"bg": page.BTN_ACTIVE, "text": page.TEXT_DARK})
+                    pill_x1 = current_x + 8
+                    pill_y1 = row_top + 9
+                    pill_x2 = board_right - 8
+                    pill_y2 = row_bottom - 9
+                    page.renderer.draw_round_rect(canvas, pill_x1, pill_y1, pill_x2, pill_y2, 12, status_meta["bg"], status_meta["bg"])
+                    label_text = task["status"]
+                    if task.get("is_saving"):
+                        label_text = f"{label_text} *"
+                    canvas.create_text(
+                        (pill_x1 + pill_x2) / 2,
+                        (pill_y1 + pill_y2) / 2,
+                        text=label_text,
+                        fill=status_meta["text"],
+                        font=("Segoe UI", 7, "bold"),
+                        width=max(10, pill_x2 - pill_x1 - 10),
+                    )
 
-        page.follow_board_scroll_enabled = content_bottom > (visible_height + 4)
-        canvas.configure(scrollregion=(0, 0, board_right + 10, max(content_bottom, visible_height)))
-        target_yview = previous_yview if tasks else 0.0
-        page.schedule_follow_scroll_restore(canvas, target_yview)
-        header_canvas.xview_moveto(previous_xview)
+                row_meta = {
+                    "task_id": task.get("task_id"),
+                    "x1": x,
+                    "y1": row_top,
+                    "x2": board_right,
+                    "y2": row_bottom,
+                    "marker_x1": x + 4,
+                    "marker_x2": x + 8,
+                    "active_item_ids": [],
+                }
+                page.follow_canvas_row_meta[task.get("task_id")] = row_meta
+                if is_active:
+                    self._set_row_active_state(canvas, row_meta, True)
+                page.canvas_row_hits.append((row_top, row_bottom, task))
+
+            try:
+                visible_height = max(1, canvas.winfo_height())
+            except Exception:
+                visible_height = 1
+
+            page.follow_board_scroll_enabled = content_bottom > (visible_height + 4)
+            canvas.configure(scrollregion=(0, 0, board_right + 10, max(content_bottom, visible_height)))
+            target_yview = previous_yview if tasks else 0.0
+            page.schedule_follow_scroll_restore(canvas, target_yview)
+            header_canvas.xview_moveto(previous_xview)
+        finally:
+            if masked:
+                self._hide_board_loading()
 
     def update_follow_board_height(self, content_height):
         page = self.page
@@ -1798,90 +1996,104 @@ class TaskFollowController:
 
     def load_task_into_form(self, task):
         page = self.page
-        if page.is_setup_training_section():
-            page.setup_training_controller.load_task_into_form(task)
-            return
+        self._show_detail_loading("Dang render task detail...")
+        try:
+            if page.is_setup_training_section():
+                page.setup_training_controller.load_task_into_form(task)
+                return
 
-        render_signature = self._build_follow_form_signature(task)
-        if render_signature == getattr(page, "follow_form_render_signature", None):
+            render_signature = self._build_follow_form_signature(task)
+            if render_signature == getattr(page, "follow_form_render_signature", None):
+                page.active_task = task
+                self.update_follow_canvas_active_task(task.get("task_id"))
+                return
+
             page.active_task = task
+            page.follow_form_render_signature = render_signature
+            page.detail_hint.configure(text="")
+            page.set_entry_value(page.merchant_name_entry, task["merchant_raw"])
+            page.set_entry_value(page.phone_entry, task["phone"])
+            page.set_entry_value(page.tracking_number_entry, task.get("tracking_number", ""))
+            page.set_entry_value(page.problem_entry, task["problem"])
+            page.handoff_from_entry.configure(state="normal")
+            page.set_entry_value(page.handoff_from_entry, task["handoff_from"])
+            page.handoff_from_entry.configure(state="disabled")
+
+            target_names = task.get("handoff_to_display_names") or []
+            if not target_names and task.get("handoff_to"):
+                target_names = [
+                    part.strip()
+                    for part in str(task.get("handoff_to", "")).split(",")
+                    if part.strip()
+                ]
+            page.set_selected_handoffs(target_names)
+            self.select_status(task["status"])
+
+            page.confirmed_deadline_date = task.get("deadline_original_date") or task["deadline_date"]
+            page.confirmed_deadline_time = ""
+            form_deadline_time = task.get("deadline_original_time") or task.get("deadline_time", "")
+            form_deadline_period = task.get("deadline_original_period") or task.get("deadline_period", "")
+            if form_deadline_time and form_deadline_period:
+                page.confirmed_deadline_time = f"{form_deadline_time} {form_deadline_period}"
+            page.update_deadline_button_text()
+            if hasattr(page, "deadline_value_hint"):
+                page.deadline_value_hint.configure(text=self._build_deadline_hint_text(task))
+            if page.current_username and page.confirmed_deadline_date:
+                page.store.load_handoff_options(
+                    page.current_username,
+                    task_date=page.confirmed_deadline_date,
+                    task_time=form_deadline_time,
+                    task_period=form_deadline_period,
+                    deadline_timezone=task.get("deadline_timezone", ""),
+                    force=True,
+                )
+
+            if hasattr(page, "note_box") and page.note_box is not None:
+                page.note_box.delete("1.0", "end")
+                page.note_box.insert("1.0", task["note"])
+
+            self.render_history(task["history"])
+            self.update_tracking_controls()
+            self.update_follow_form_mode()
             self.update_follow_canvas_active_task(task.get("task_id"))
-            return
-
-        page.active_task = task
-        page.follow_form_render_signature = render_signature
-        page.detail_hint.configure(text="")
-        page.set_entry_value(page.merchant_name_entry, task["merchant_raw"])
-        page.set_entry_value(page.phone_entry, task["phone"])
-        page.set_entry_value(page.tracking_number_entry, task.get("tracking_number", ""))
-        page.set_entry_value(page.problem_entry, task["problem"])
-        page.handoff_from_entry.configure(state="normal")
-        page.set_entry_value(page.handoff_from_entry, task["handoff_from"])
-        page.handoff_from_entry.configure(state="disabled")
-
-        target_names = task.get("handoff_to_display_names") or []
-        if not target_names and task.get("handoff_to"):
-            target_names = [
-                part.strip()
-                for part in str(task.get("handoff_to", "")).split(",")
-                if part.strip()
-            ]
-        page.set_selected_handoffs(target_names)
-        self.select_status(task["status"])
-
-        page.confirmed_deadline_date = task["deadline_date"]
-        page.confirmed_deadline_time = ""
-        if task.get("deadline_time") and task.get("deadline_period"):
-            page.confirmed_deadline_time = f"{task['deadline_time']} {task['deadline_period']}"
-        page.update_deadline_button_text()
-        if page.current_username and task.get("deadline_date"):
-            page.store.load_handoff_options(
-                page.current_username,
-                task_date=task["deadline_date"],
-                task_time=task.get("deadline_time", ""),
-                task_period=task.get("deadline_period", ""),
-            )
-
-        if hasattr(page, "note_box") and page.note_box is not None:
-            page.note_box.delete("1.0", "end")
-            page.note_box.insert("1.0", task["note"])
-
-        self.render_history(task["history"])
-        self.update_tracking_controls()
-        self.update_follow_form_mode()
-        self.update_follow_canvas_active_task(task.get("task_id"))
-        page.schedule_detail_scroll_update()
+            page.schedule_detail_scroll_update()
+        finally:
+            self._hide_detail_loading()
 
     def clear_follow_form(self):
         page = self.page
         previous_task_id = page.active_task.get("task_id") if page.active_task else None
-        if page.is_setup_training_section():
-            page.setup_training_controller.clear_form()
-            return
+        self._show_detail_loading("Dang cap nhat task detail...")
+        try:
+            if page.is_setup_training_section():
+                page.setup_training_controller.clear_form()
+                return
 
-        page.active_task = None
-        page.follow_form_render_signature = None
-        page.follow_history_render_signature = None
-        page.detail_hint.configure(text=self.get_no_match_detail_hint())
-        for entry in [page.merchant_name_entry, page.phone_entry, page.tracking_number_entry, page.problem_entry]:
-            page.set_entry_value(entry, "")
-        page.confirmed_deadline_date = ""
-        page.confirmed_deadline_time = ""
-        page.pending_deadline_date = ""
-        page.pending_deadline_time = page.deadline_time_slots[0] if page.deadline_time_slots else ""
-        page.update_deadline_button_text()
-        page.handoff_from_entry.configure(state="normal")
-        page.set_entry_value(page.handoff_from_entry, page.current_display_name)
-        page.handoff_from_entry.configure(state="disabled")
-        page.note_box.delete("1.0", "end")
-        page.set_selected_handoffs(["Tech Team"])
-        self.select_status(self.get_default_task_status())
-        self.render_history([])
-        self.update_tracking_controls()
-        self.update_follow_form_mode()
-        if previous_task_id is not None:
-            self.update_follow_canvas_active_task(None)
-        page.schedule_detail_scroll_update()
+            page.active_task = None
+            page.follow_form_render_signature = None
+            page.follow_history_render_signature = None
+            page.detail_hint.configure(text=self.get_no_match_detail_hint())
+            for entry in [page.merchant_name_entry, page.phone_entry, page.tracking_number_entry, page.problem_entry]:
+                page.set_entry_value(entry, "")
+            page.confirmed_deadline_date = ""
+            page.confirmed_deadline_time = ""
+            page.pending_deadline_date = ""
+            page.pending_deadline_time = page.deadline_time_slots[0] if page.deadline_time_slots else ""
+            page.update_deadline_button_text()
+            page.handoff_from_entry.configure(state="normal")
+            page.set_entry_value(page.handoff_from_entry, page.current_display_name)
+            page.handoff_from_entry.configure(state="disabled")
+            page.note_box.delete("1.0", "end")
+            page.set_selected_handoffs(["Tech Team"])
+            self.select_status(self.get_default_task_status())
+            self.render_history([])
+            self.update_tracking_controls()
+            self.update_follow_form_mode()
+            if previous_task_id is not None:
+                self.update_follow_canvas_active_task(None)
+            page.schedule_detail_scroll_update()
+        finally:
+            self._hide_detail_loading()
 
     def start_new_task(self):
         page = self.page

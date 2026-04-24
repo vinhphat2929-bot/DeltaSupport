@@ -3,6 +3,7 @@ from copy import deepcopy
 import requests
 
 from services.app_config import API_BASE_URL
+from utils.timezone_utils import detect_local_timezone_name
 
 
 TASK_STATUSES = [
@@ -56,8 +57,23 @@ def _normalize_task(task):
     item["status"] = _normalize_status(item.get("status")) or "FOLLOW"
     item["deadline"] = _normalize_text(item.get("deadline"))
     item["deadline_date"] = _normalize_text(item.get("deadline_date"))
-    item["deadline_time"] = _normalize_text(item.get("deadline_time")) or "02:00"
+    item["deadline_time"] = _normalize_text(item.get("deadline_time")) or "08:00"
     item["deadline_period"] = _normalize_text(item.get("deadline_period")).upper() or "AM"
+    item["deadline_original_label"] = _normalize_text(item.get("deadline_original_label"))
+    item["deadline_original_date"] = _normalize_text(item.get("deadline_original_date"))
+    item["deadline_original_time"] = _normalize_text(item.get("deadline_original_time"))
+    item["deadline_original_period"] = _normalize_text(item.get("deadline_original_period")).upper() or "AM"
+    item["deadline_ust_label"] = _normalize_text(item.get("deadline_ust_label")) or item["deadline_original_label"]
+    item["deadline_ust_date"] = _normalize_text(item.get("deadline_ust_date")) or item["deadline_original_date"]
+    item["deadline_ust_time"] = _normalize_text(item.get("deadline_ust_time")) or item["deadline_original_time"]
+    item["deadline_ust_period"] = _normalize_text(item.get("deadline_ust_period")).upper() or item["deadline_original_period"]
+    item["deadline_vn_label"] = _normalize_text(item.get("deadline_vn_label"))
+    item["deadline_vn_date"] = _normalize_text(item.get("deadline_vn_date"))
+    item["deadline_vn_time"] = _normalize_text(item.get("deadline_vn_time"))
+    item["deadline_vn_period"] = _normalize_text(item.get("deadline_vn_period")).upper() or "AM"
+    item["deadline_timezone"] = _normalize_text(item.get("deadline_timezone"))
+    item["deadline_viewer_timezone"] = _normalize_text(item.get("deadline_viewer_timezone"))
+    item["deadline_at_utc"] = _normalize_text(item.get("deadline_at_utc"))
     item["note"] = _normalize_text(item.get("note"))
     item["updated_at"] = _normalize_text(item.get("updated_at"))
     item["training_form"] = item.get("training_form") or []
@@ -94,11 +110,17 @@ def _normalize_notification_item(item):
 
 
 class TaskService:
+    def __init__(self, viewer_timezone=""):
+        self.viewer_timezone = _normalize_text(viewer_timezone) or detect_local_timezone_name()
+
     def get_notification_unread_count(self, action_by):
         try:
             response = requests.get(
                 f"{API_BASE_URL}/task-follows/notifications/count",
-                params={"action_by": action_by},
+                params={
+                    "action_by": action_by,
+                    "viewer_timezone": self.viewer_timezone,
+                },
                 timeout=20,
             )
             payload = response.json()
@@ -120,7 +142,10 @@ class TaskService:
         try:
             response = requests.get(
                 f"{API_BASE_URL}/task-follows/notifications",
-                params={"action_by": action_by},
+                params={
+                    "action_by": action_by,
+                    "viewer_timezone": self.viewer_timezone,
+                },
                 timeout=20,
             )
             payload = response.json()
@@ -197,6 +222,7 @@ class TaskService:
                     "search": _normalize_text(search_text),
                     "show_all": bool(show_all),
                     "include_done": bool(include_done),
+                    "viewer_timezone": self.viewer_timezone,
                 },
                 timeout=20,
             )
@@ -222,7 +248,10 @@ class TaskService:
         try:
             response = requests.get(
                 f"{API_BASE_URL}/task-follows/{task_id}",
-                params={"action_by": action_by},
+                params={
+                    "action_by": action_by,
+                    "viewer_timezone": self.viewer_timezone,
+                },
                 timeout=20,
             )
             payload = response.json()
@@ -236,7 +265,7 @@ class TaskService:
 
         return {"success": True, "data": _normalize_task(payload.get("data"))}
 
-    def get_handoff_options(self, action_by, task_date="", task_time="", task_period=""):
+    def get_handoff_options(self, action_by, task_date="", task_time="", task_period="", deadline_timezone=""):
         try:
             response = requests.get(
                 f"{API_BASE_URL}/task-follows/handoff-options",
@@ -245,6 +274,7 @@ class TaskService:
                     "task_date": str(task_date or "").strip(),
                     "task_time": str(task_time or "").strip(),
                     "task_period": str(task_period or "").strip(),
+                    "deadline_timezone": _normalize_text(deadline_timezone),
                 },
                 timeout=20,
             )
@@ -265,9 +295,11 @@ class TaskService:
 
     def create_task(self, payload):
         try:
+            request_payload = deepcopy(payload or {})
+            request_payload["viewer_timezone"] = self.viewer_timezone
             response = requests.post(
                 f"{API_BASE_URL}/task-follows",
-                json=payload,
+                json=request_payload,
                 timeout=25,
             )
             result = response.json()
@@ -281,9 +313,11 @@ class TaskService:
 
     def update_task(self, task_id, payload):
         try:
+            request_payload = deepcopy(payload or {})
+            request_payload["viewer_timezone"] = self.viewer_timezone
             response = requests.put(
                 f"{API_BASE_URL}/task-follows/{task_id}",
-                json=payload,
+                json=request_payload,
                 timeout=25,
             )
             result = response.json()

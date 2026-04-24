@@ -125,16 +125,16 @@ class TaskSetupTrainingController:
         deadline_time = str(current_task.get("deadline_time", "")).strip()
         deadline_period = str(current_task.get("deadline_period", "")).strip()
         if deadline_date and deadline_time and deadline_period:
-            date_label = f"Ngay hen: {deadline_date}  {deadline_time} {deadline_period}"
+            date_label = f"Due day: {deadline_date}  {deadline_time} {deadline_period}"
         elif deadline_date:
-            date_label = f"Ngay hen: {deadline_date}"
+            date_label = f"Due day: {deadline_date}"
         else:
-            date_label = "Ngay hen: -"
+            date_label = "Due day: -"
         if hasattr(page, "training_date_label") and page.training_date_label:
             page.training_date_label.configure(text=date_label)
 
         is_second = self.get_training_stage_key(current_task) == "second"
-        stage_text = "2nd Training" if is_second else "1st Setup & Training"
+        stage_text = "2nd Training" if is_second else "Set up & 1st Training"
         stage_color = "#0ea5a3" if is_second else "#9333ea"
         if hasattr(page, "training_stage_badge") and page.training_stage_badge:
             page.training_stage_badge.configure(text=stage_text, fg_color=stage_color)
@@ -195,12 +195,9 @@ class TaskSetupTrainingController:
 
         page.active_task = task
         page.setup_training_form_render_signature = render_signature
-        page.detail_hint.configure(
-            text=(
-                f"Dang xem {page.get_task_module_label().lower()}: {task['merchant_name']} | "
-                "Luu checklist training va handoff nguoi tiep theo tai day."
-            )
-        )
+        if hasattr(page, "detail_hint") and page.detail_hint is not None:
+            page.detail_hint.configure(text="")
+            page.detail_hint.grid_remove()
         target_names = task.get("handoff_to_display_names") or []
         if not target_names and task.get("handoff_to"):
             target_names = [
@@ -233,7 +230,9 @@ class TaskSetupTrainingController:
         page.active_task = None
         page.setup_training_form_render_signature = None
         page.follow_history_render_signature = None
-        page.detail_hint.configure(text=page.get_no_match_detail_hint())
+        if hasattr(page, "detail_hint") and page.detail_hint is not None:
+            page.detail_hint.configure(text=page.get_no_match_detail_hint())
+            page.detail_hint.grid()
         page.set_selected_handoffs(["Tech Team"])
         page.training_form_draft_sections = []
         page.completed_tabs = set()
@@ -859,11 +858,13 @@ class TaskSetupTrainingController:
             and deadline_time
             and deadline_period in {"AM", "PM"}
         ):
+            preview = page.get_deadline_preview_payload(deadline_date, deadline_time, deadline_period)
             page.store.load_handoff_options(
                 page.current_username,
                 task_date=deadline_date,
                 task_time=deadline_time,
                 task_period=deadline_period,
+                deadline_timezone=preview.get("deadline_timezone", ""),
             )
             if getattr(page, "follow_poll_after_id", None) is None:
                 page.poll_follow_store_events()
@@ -899,12 +900,18 @@ class TaskSetupTrainingController:
     def update_popup_deadline_button_text(self):
         page = self.page
         if hasattr(page, "popup_deadline_picker_button") and page.popup_deadline_picker_button.winfo_exists():
+            preview = {}
             if page.pending_deadline_date and page.pending_deadline_time:
                 page.popup_deadline_picker_button.configure(text=f"{page.pending_deadline_date} {page.pending_deadline_time}")
+                preview = page.get_deadline_preview_payload(
+                    page.pending_deadline_date,
+                    page.pending_deadline_time,
+                    "",
+                )
             else:
                 page.popup_deadline_picker_button.configure(text="Choose Date & Time")
             if hasattr(page, "popup_deadline_value_hint") and page.popup_deadline_value_hint.winfo_exists():
-                page.popup_deadline_value_hint.configure(text="")
+                page.popup_deadline_value_hint.configure(text=page.format_deadline_hint_text(preview))
 
     def confirm_training_save(self, action_type):
         page = self.page

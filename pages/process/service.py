@@ -10,7 +10,11 @@ class ProcessService:
         self.store = store
         self.user_info = current_user_info
         self.username = str(current_user_info.get("username", "")).strip()
-        self.display_name = str(current_user_info.get("full_name", "")).strip() or self.username
+        self.display_name = (
+            str(current_user_info.get("display_name", "")).strip()
+            or str(current_user_info.get("full_name", "")).strip()
+            or self.username
+        )
 
     def load_bootstrap(self, show_all=False, include_done=False):
         self.store.set_view(show_all=show_all, include_done=include_done)
@@ -92,6 +96,7 @@ class ProcessService:
         payload = {
             "action_by_username": self.username,
             "merchant_raw_text": merchant_raw_text,
+            "merchant_timezone": form_data.get("merchant_timezone", ""),
             "phone": form_data.get("phone", "").strip(),
             "tracking_number": tracking_number,
             "problem_summary": form_data.get("problem", "").strip(),

@@ -46,12 +46,15 @@ Root:
 
 Frontend pages:
 - [pages/login_page.py](../pages/login_page.py): login UI
-- [pages/process_page.py](../pages/process_page.py): task page hien tai; `Task Follow` dang giu UI cu tai day
+- [pages/process_page.py](../pages/process_page.py): shell chung cho module `Task`
+- [pages/task_report_page.py](../pages/task_report_page.py): `Task -> Report`, daily case note + saved reports
 - [pages/tech_schedule_page.py](../pages/tech_schedule_page.py): lich lam viec theo tuan
 - [pages/leave_summary_page.py](../pages/leave_summary_page.py): tong hop nghi theo thang
 - [pages/leave_request_page.py](../pages/leave_request_page.py): tao request nghi
 - [pages/admin_approval_page.py](../pages/admin_approval_page.py): admin manager
 - [pages/schedule_setup_page.py](../pages/schedule_setup_page.py): cau hinh noi bo cho lich co dinh
+- [pages/link_data_page.py](../pages/link_data_page.py): link, sheet va data noi bo
+- [pages/pos_page.py](../pages/pos_page.py): POS lookup
 - [pages/sql_page.py](../pages/sql_page.py): function `Sync Card to Ticket`
 
 Frontend services:
@@ -60,6 +63,7 @@ Frontend services:
 - [services/schedule_config_service.py](../services/schedule_config_service.py): luu config local cho `Schedule Setup`
 - [services/sql_tool_service.py](../services/sql_tool_service.py): call API log cho `Sync Card to Ticket`
 - [services/task_service.py](../services/task_service.py): API layer cho `Task Follow`
+- [services/task_report_service.py](../services/task_report_service.py): API layer cho `Task -> Report`
 
 Frontend stores:
 - [stores/base_store.py](../stores/base_store.py): base in-memory store
@@ -75,6 +79,7 @@ Backend:
 - [backend_server/routers/work_schedule.py](../backend_server/routers/work_schedule.py): work schedule APIs
 - [backend_server/routers/tool_logs.py](../backend_server/routers/tool_logs.py): log API cho `Sync Card to Ticket`
 - [backend_server/routers/task_follow.py](../backend_server/routers/task_follow.py): API cho `Task Follow`
+- [backend_server/routers/task_report.py](../backend_server/routers/task_report.py): API cho `Task -> Report`
 
 ## Cong nghe
 
@@ -129,6 +134,31 @@ Neu deploy that khac may:
 
 ## Cac luong chinh
 
+### Ban do chuc nang / tien trinh hien tai
+
+Top menu hien tai dang map voi nghiep vu nhu sau:
+
+- `Task`
+  - `Report`: daily case note, saved reports, local search, filter theo ngay
+  - `Follow`: theo doi task follow merchant, handoff, deadline, note, notice
+  - `Setup / Training`: checklist `I. SET UP HARDWARE`, `II. SET UP POS`, `III. TRAINING`; flow `1st Training` -> `2nd Training` -> `DONE`
+- `Link / Data`
+  - khu vuc link, sheet va data noi bo
+- `Work Schedule`
+  - `Work Schedule`: xem lich lam theo tuan
+  - `Monthly Leave Summary`: tong hop nghi theo thang
+  - `Schedule Setup`: cau hinh employee active / shift cho schedule
+  - `Create Leave Request`: gui don nghi
+- `POS`
+  - POS lookup
+- `SQL`
+  - `Sync Card to Ticket`
+
+Ghi chu demo build hien tai:
+
+- `POS` va `SQL` dang duoc tam an khoi top menu de build demo.
+- Code va page cua 2 muc nay van con trong repo; chi an navigation, khong xoa logic.
+
 ### Dang nhap
 
 Frontend:
@@ -176,6 +206,22 @@ Rule da chot:
 - da co cache/store local + persistent notice read/unread + handoff nhieu user
 - neu chi sua frontend/store/service local thi khong can copy len may chu
 - can context day du thi doc them `docs/TASK_FOLLOW_STATUS.md`
+
+### Task Report
+
+Frontend:
+- [pages/process_page.py](../pages/process_page.py)
+- [pages/task_report_page.py](../pages/task_report_page.py)
+- [services/task_report_service.py](../services/task_report_service.py)
+
+Backend:
+- [backend_server/routers/task_report.py](../backend_server/routers/task_report.py)
+- [backend_server/models.py](../backend_server/models.py)
+
+Mo ta:
+- `Task -> Report` la daily case note form kem danh sach `Saved Reports`
+- dang ho tro create / update / delete report, local search, filter theo ngay
+- technician duoc map theo user dang login va co su dung du lieu schedule de xu ly phan lien quan
 
 ## Goi y doc nhanh
 

@@ -1,6 +1,8 @@
 import tkinter as tk
 import customtkinter as ctk
 
+from utils.timezone_utils import format_deadline_hint_text
+
 
 SETUP_BOARD_COMPACT_WIDTH = 280
 
@@ -408,11 +410,18 @@ class ProcessLayout:
 
         deadline_wrap = ctk.CTkFrame(parent, fg_color="transparent")
         deadline_wrap.grid(row=row, column=0, sticky="ew", padx=18, pady=(2, 10))
+        deadline_wrap.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(deadline_wrap, text="Ngay gio hen", font=("Segoe UI", 12, "bold"), text_color=colors["TEXT_DARK"]).grid(row=0, column=0, sticky="w", pady=(0, 6))
         w["deadline_picker_button"] = ctk.CTkButton(deadline_wrap, text="Choose Date & Time", width=220, height=38, corner_radius=12, fg_color=colors["INPUT_BG"], hover_color="#f6ead7", border_width=1, border_color=colors["INPUT_BORDER"], text_color=colors["TEXT_DARK"], font=("Segoe UI", 11, "bold"), anchor="w", command=callbacks["on_deadline_click"])
         w["deadline_picker_button"].grid(row=1, column=0, sticky="w")
-        w["deadline_value_hint"] = ctk.CTkLabel(deadline_wrap, text="Chua chon ngay gio hen.", font=("Segoe UI", 10), text_color=colors["TEXT_MUTED"])
-        w["deadline_value_hint"].grid(row=1, column=1, sticky="w", padx=(12, 0))
+        w["deadline_value_hint"] = ctk.CTkLabel(
+            deadline_wrap,
+            text=format_deadline_hint_text(),
+            font=("Segoe UI", 10),
+            text_color=colors["TEXT_MUTED"],
+            justify="left",
+        )
+        w["deadline_value_hint"].grid(row=2, column=0, sticky="w", pady=(8, 0))
         row += 1
 
         self.create_section_label(parent, row, "Assignee", colors["TEXT_DARK"])
@@ -484,7 +493,7 @@ class ProcessLayout:
 
         row3 = ctk.CTkFrame(info_card, fg_color="transparent")
         row3.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 10))
-        w["training_stage_badge"] = ctk.CTkLabel(row3, text="1st Setup & Training", font=("Segoe UI", 11, "bold"), text_color="#ffffff", fg_color="#9333ea", corner_radius=8, width=160, height=26)
+        w["training_stage_badge"] = ctk.CTkLabel(row3, text="Set up & 1st Training", font=("Segoe UI", 11, "bold"), text_color="#ffffff", fg_color="#9333ea", corner_radius=8, width=170, height=26)
         w["training_stage_badge"].pack(side="left", ipadx=4)
 
         # Start button — visible before training begins (also contains View Info for DONE tasks)
@@ -638,10 +647,17 @@ class ProcessLayout:
         row += 1
         deadline_wrap = ctk.CTkFrame(main_frame, fg_color="transparent")
         deadline_wrap.grid(row=row, column=0, sticky="ew", padx=18, pady=(0, 12))
+        deadline_wrap.grid_columnconfigure(0, weight=1)
         w["popup_deadline_picker_button"] = ctk.CTkButton(deadline_wrap, text="Choose Date & Time", width=220, height=38, corner_radius=12, fg_color=colors["INPUT_BG"], hover_color="#f6ead7", border_width=1, border_color=colors["INPUT_BORDER"], text_color=colors["TEXT_DARK"], font=("Segoe UI", 11, "bold"), anchor="w", command=callbacks.get("on_popup_deadline_click", lambda: None))
         w["popup_deadline_picker_button"].grid(row=0, column=0, sticky="w")
-        w["popup_deadline_value_hint"] = ctk.CTkLabel(deadline_wrap, text="Chua chon ngay gio hen.", font=("Segoe UI", 10), text_color=colors["TEXT_MUTED"])
-        w["popup_deadline_value_hint"].grid(row=0, column=1, sticky="w", padx=(12, 0))
+        w["popup_deadline_value_hint"] = ctk.CTkLabel(
+            deadline_wrap,
+            text=format_deadline_hint_text(),
+            font=("Segoe UI", 10),
+            text_color=colors["TEXT_MUTED"],
+            justify="left",
+        )
+        w["popup_deadline_value_hint"].grid(row=1, column=0, sticky="w", pady=(8, 0))
         row += 1
 
         self.create_section_label(main_frame, row, "Assignee", colors["TEXT_DARK"])
