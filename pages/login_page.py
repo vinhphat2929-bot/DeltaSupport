@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import customtkinter as ctk
 from tkinter import messagebox
 from PIL import Image
@@ -19,6 +20,47 @@ class LoginPage(ctk.CTkFrame):
         self.lock_icon = None
 
         self.build_ui()
+
+    def _get_login_prefs_path(self):
+        base_dir = (
+            os.getenv("LOCALAPPDATA")
+            or os.getenv("APPDATA")
+            or str(Path.home())
+            or os.getcwd()
+        )
+        return Path(base_dir) / "DeltaOne" / "login_prefs.json"
+
+    def _load_login_prefs(self):
+        prefs_path = self._get_login_prefs_path()
+        try:
+            if not prefs_path.exists():
+                return {}
+            with open(prefs_path, "r", encoding="utf-8") as f:
+                import json
+                payload = json.load(f)
+            if not isinstance(payload, dict):
+                payload = {}
+            return payload
+        except Exception as exc:
+            return {}
+
+    def _save_login_prefs(self, remember_username, username):
+        prefs_path = self._get_login_prefs_path()
+        try:
+            prefs_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "remember_username": bool(remember_username),
+                "username": (str(username or "").strip() if remember_username else ""),
+            }
+            if not payload["remember_username"]:
+                if prefs_path.exists():
+                    prefs_path.unlink(missing_ok=True)
+                return
+            with open(prefs_path, "w", encoding="utf-8") as f:
+                import json
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            return
 
     def get_base_path(self):
         return os.path.dirname(os.path.abspath(__file__))
@@ -142,6 +184,36 @@ class LoginPage(ctk.CTkFrame):
         )
         self.password_entry.pack(side="left", fill="both", expand=True, padx=8)
 
+        # ===== REMEMBER USERNAME =====
+        self.remember_var = ctk.BooleanVar(value=False)
+        remember_wrap = ctk.CTkFrame(container, width=300, height=26, fg_color="transparent")
+        remember_wrap.pack(pady=(2, 0))
+        remember_wrap.pack_propagate(False)
+        remember_group = ctk.CTkFrame(remember_wrap, fg_color="transparent")
+        remember_group.pack(side="right", anchor="e")
+        remember_group.grid_columnconfigure(0, weight=0)
+        remember_group.grid_columnconfigure(1, weight=0)
+
+        remember_label = ctk.CTkLabel(
+            remember_group,
+            text="Remember me",
+            text_color="#f4e7c1",
+            font=("Segoe UI", 12, "bold"),
+        )
+        remember_label.grid(row=0, column=0, sticky="e", padx=(0, 10))
+
+        self.remember_checkbox = ctk.CTkCheckBox(
+            remember_group,
+            text="",
+            variable=self.remember_var,
+            onvalue=True,
+            offvalue=False,
+            fg_color="#a36a1f",
+            hover_color="#d4a64a",
+            width=18,
+        )
+        self.remember_checkbox.grid(row=0, column=1, sticky="e")
+
         # ===== LOGIN BUTTON =====
         login_btn = ctk.CTkButton(
             container,
@@ -175,6 +247,19 @@ class LoginPage(ctk.CTkFrame):
         self.username_entry.bind("<Return>", lambda event: self.handle_login())
         self.password_entry.bind("<Return>", lambda event: self.handle_login())
 
+        # Load saved username (if enabled)
+        prefs = self._load_login_prefs()
+        remember_username = bool(prefs.get("remember_username"))
+        saved_username = str(prefs.get("username", "")).strip()
+        if remember_username and saved_username:
+            try:
+                self.remember_var.set(True)
+                self.username_entry.delete(0, "end")
+                self.username_entry.insert(0, saved_username)
+                self.password_entry.focus_set()
+            except Exception:
+                pass
+
     def handle_login(self):
         username = self.username_entry.get().strip()
         password = self.password_entry.get().strip()
@@ -188,6 +273,7 @@ class LoginPage(ctk.CTkFrame):
         result = login_api(username, password)
 
         if result.get("success"):
+            self._save_login_prefs(bool(self.remember_var.get()), username)
             user = {
                 "username": result.get("username"),
                 "full_name": result.get("full_name", ""),

@@ -1,4 +1,6 @@
 import re
+import logging
+import time
 from datetime import datetime, timedelta
 import threading
 
@@ -10,8 +12,11 @@ from database import get_connection
 from models import (
     TaskFollowNotificationClearRequest,
     TaskFollowNotificationReadRequest,
+    TaskFollowPartialUpdateRequest,
     TaskFollowUpsertRequest,
 )
+
+logger = logging.getLogger("uvicorn.error")
 
 EARLY_MORNING_SHIFT_CUTOFF_HOUR = 6
 try:
@@ -346,6 +351,186 @@ def get_user_department(cursor, username):
     return normalize_text(row[0]) if row else ""
 
 
+def normalize_positive_int_ids(values):
+    normalized = []
+    for raw_value in values or []:
+        try:
+            item_id = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if item_id > 0 and item_id not in normalized:
+            normalized.append(item_id)
+    return normalized
+
+
+def get_visible_announcement_ids(cursor, username, department, announcement_ids):
+    normalized_ids = normalize_positive_int_ids(announcement_ids)
+    if not normalized_ids:
+        return []
+
+    placeholders = ",".join(["?"] * len(normalized_ids))
+    cursor.execute(
+        f"""
+        SELECT AnnouncementID
+        FROM dbo.AppAnnouncement a
+        WHERE IsActive = 1
+          AND AnnouncementID IN ({placeholders})
+          AND (
+                UPPER(ISNULL(TargetType, 'ALL')) = 'ALL'
+                OR (
+                    UPPER(ISNULL(TargetType, '')) = 'DEPARTMENT'
+                    AND ISNULL(TargetDepartment, '') = ?
+                )
+                OR (
+                    UPPER(ISNULL(TargetType, '')) = 'USERS'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM dbo.AppAnnouncementRecipient aar
+                        WHERE aar.AnnouncementID = a.AnnouncementID
+                          AND aar.Username = ?
+                    )
+                )
+              )
+        """,
+        (*normalized_ids, normalize_text(department), normalize_username(username)),
+    )
+    return [int(row[0]) for row in cursor.fetchall() if row and row[0] is not None]
+
+
+def build_announcement_items(cursor, username, department):
+    ensure_app_announcement_tables(cursor)
+    cursor.execute(
+        """
+        SELECT TOP 20
+            a.AnnouncementID,
+            a.Title,
+            a.Message,
+            a.TargetType,
+            a.TargetDepartment,
+            a.CreatedBy,
+            a.CreatedAt,
+            CASE
+                WHEN ar.AnnouncementID IS NOT NULL
+                 AND ar.ReadAt >= ISNULL(a.CreatedAt, GETDATE())
+                THEN 1
+                ELSE 0
+            END AS IsRead
+        FROM dbo.AppAnnouncement a
+        LEFT JOIN dbo.AppAnnouncementRead ar
+            ON ar.AnnouncementID = a.AnnouncementID
+           AND ar.Username = ?
+        LEFT JOIN dbo.AppAnnouncementDismiss ad
+            ON ad.AnnouncementID = a.AnnouncementID
+           AND ad.Username = ?
+        WHERE a.IsActive = 1
+          AND (
+                ad.AnnouncementID IS NULL
+                OR ad.DismissedAt < ISNULL(a.CreatedAt, GETDATE())
+              )
+          AND (
+                UPPER(ISNULL(a.TargetType, 'ALL')) = 'ALL'
+                OR (
+                    UPPER(ISNULL(a.TargetType, '')) = 'DEPARTMENT'
+                    AND ISNULL(a.TargetDepartment, '') = ?
+                )
+                OR (
+                    UPPER(ISNULL(a.TargetType, '')) = 'USERS'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM dbo.AppAnnouncementRecipient aar
+                        WHERE aar.AnnouncementID = a.AnnouncementID
+                          AND aar.Username = ?
+                    )
+                )
+              )
+        ORDER BY a.CreatedAt DESC, a.AnnouncementID DESC
+        """,
+        (username, username, normalize_text(department), normalize_username(username)),
+    )
+
+    items = []
+    unread_count = 0
+    latest_updated_at = None
+    for row in cursor.fetchall():
+        created_at = getattr(row, "CreatedAt", None)
+        if created_at and (latest_updated_at is None or created_at > latest_updated_at):
+            latest_updated_at = created_at
+        is_read = bool(getattr(row, "IsRead", 0))
+        if not is_read:
+            unread_count += 1
+        target_type = normalize_text(getattr(row, "TargetType", "")).upper() or "ALL"
+        target_department = normalize_text(getattr(row, "TargetDepartment", ""))
+        if target_type == "ALL":
+            target_label = "All users"
+        elif target_type == "USERS":
+            target_label = "Selected users"
+        else:
+            target_label = target_department
+        items.append(
+            {
+                "id": f"announcement-{row.AnnouncementID}",
+                "notification_type": "announcement",
+                "announcement_id": row.AnnouncementID,
+                "task_id": None,
+                "title": normalize_text(row.Title) or "Announcement",
+                "meta": f"Admin announcement | {target_label}",
+                "message": normalize_text(row.Message),
+                "task_section": "",
+                "is_read": is_read,
+                "updated_at": created_at.strftime("%Y-%m-%d %H:%M:%S") if created_at else "",
+            }
+        )
+    return items, unread_count, latest_updated_at
+
+
+def get_announcement_unread_count(cursor, username, department):
+    ensure_app_announcement_tables(cursor)
+    cursor.execute(
+        """
+        SELECT
+            COUNT(DISTINCT a.AnnouncementID) AS UnreadCount,
+            MAX(a.CreatedAt) AS LatestUpdatedAt
+        FROM dbo.AppAnnouncement a
+        LEFT JOIN dbo.AppAnnouncementRead ar
+            ON ar.AnnouncementID = a.AnnouncementID
+           AND ar.Username = ?
+        LEFT JOIN dbo.AppAnnouncementDismiss ad
+            ON ad.AnnouncementID = a.AnnouncementID
+           AND ad.Username = ?
+        WHERE a.IsActive = 1
+          AND (
+                ad.AnnouncementID IS NULL
+                OR ad.DismissedAt < ISNULL(a.CreatedAt, GETDATE())
+              )
+          AND (
+                UPPER(ISNULL(a.TargetType, 'ALL')) = 'ALL'
+                OR (
+                    UPPER(ISNULL(a.TargetType, '')) = 'DEPARTMENT'
+                    AND ISNULL(a.TargetDepartment, '') = ?
+                )
+                OR (
+                    UPPER(ISNULL(a.TargetType, '')) = 'USERS'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM dbo.AppAnnouncementRecipient aar
+                        WHERE aar.AnnouncementID = a.AnnouncementID
+                          AND aar.Username = ?
+                    )
+                )
+              )
+          AND (
+                ar.AnnouncementID IS NULL
+                OR ar.ReadAt < ISNULL(a.CreatedAt, GETDATE())
+              )
+        """,
+        (username, username, normalize_text(department), normalize_username(username)),
+    )
+    row = cursor.fetchone()
+    unread_count = int(getattr(row, "UnreadCount", 0) or 0) if row else 0
+    latest_updated_at = getattr(row, "LatestUpdatedAt", None) if row else None
+    return unread_count, latest_updated_at
+
+
 def ensure_task_follow_notification_read_table(cursor):
     cursor.execute(
         """
@@ -481,6 +666,123 @@ def ensure_task_follow_recipient_table(cursor):
         BEGIN
             CREATE INDEX IX_TaskFollowRecipient_Username
             ON dbo.TaskFollowRecipient(Username)
+        END
+        """
+    )
+
+
+def ensure_app_announcement_tables(cursor):
+    cursor.execute(
+        """
+        IF OBJECT_ID('dbo.AppAnnouncement', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.AppAnnouncement (
+                AnnouncementID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                Title NVARCHAR(255) NOT NULL,
+                Message NVARCHAR(MAX) NOT NULL,
+                TargetType NVARCHAR(30) NOT NULL DEFAULT 'ALL',
+                TargetDepartment NVARCHAR(100) NULL,
+                CreatedBy NVARCHAR(100) NULL,
+                CreatedAt DATETIME NOT NULL DEFAULT GETDATE(),
+                IsActive BIT NOT NULL DEFAULT 1
+            )
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF OBJECT_ID('dbo.AppAnnouncementRead', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.AppAnnouncementRead (
+                ReadID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                AnnouncementID INT NOT NULL,
+                Username NVARCHAR(100) NOT NULL,
+                ReadAt DATETIME NOT NULL DEFAULT GETDATE(),
+                CONSTRAINT FK_AppAnnouncementRead_AnnouncementID
+                    FOREIGN KEY (AnnouncementID) REFERENCES dbo.AppAnnouncement(AnnouncementID)
+            )
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF OBJECT_ID('dbo.AppAnnouncementDismiss', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.AppAnnouncementDismiss (
+                DismissID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                AnnouncementID INT NOT NULL,
+                Username NVARCHAR(100) NOT NULL,
+                DismissedAt DATETIME NOT NULL DEFAULT GETDATE(),
+                CONSTRAINT FK_AppAnnouncementDismiss_AnnouncementID
+                    FOREIGN KEY (AnnouncementID) REFERENCES dbo.AppAnnouncement(AnnouncementID)
+            )
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF OBJECT_ID('dbo.AppAnnouncementRecipient', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.AppAnnouncementRecipient (
+                RecipientID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                AnnouncementID INT NOT NULL,
+                Username NVARCHAR(100) NOT NULL,
+                CreatedAt DATETIME NOT NULL DEFAULT GETDATE(),
+                CONSTRAINT FK_AppAnnouncementRecipient_AnnouncementID
+                    FOREIGN KEY (AnnouncementID) REFERENCES dbo.AppAnnouncement(AnnouncementID)
+            )
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'IX_AppAnnouncement_Target_CreatedAt'
+              AND object_id = OBJECT_ID('dbo.AppAnnouncement')
+        )
+        BEGIN
+            CREATE INDEX IX_AppAnnouncement_Target_CreatedAt
+            ON dbo.AppAnnouncement(IsActive, TargetType, TargetDepartment, CreatedAt DESC)
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'UX_AppAnnouncementRead_AnnouncementID_Username'
+              AND object_id = OBJECT_ID('dbo.AppAnnouncementRead')
+        )
+        BEGIN
+            CREATE UNIQUE INDEX UX_AppAnnouncementRead_AnnouncementID_Username
+            ON dbo.AppAnnouncementRead(AnnouncementID, Username)
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'UX_AppAnnouncementDismiss_AnnouncementID_Username'
+              AND object_id = OBJECT_ID('dbo.AppAnnouncementDismiss')
+        )
+        BEGIN
+            CREATE UNIQUE INDEX UX_AppAnnouncementDismiss_AnnouncementID_Username
+            ON dbo.AppAnnouncementDismiss(AnnouncementID, Username)
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'UX_AppAnnouncementRecipient_AnnouncementID_Username'
+              AND object_id = OBJECT_ID('dbo.AppAnnouncementRecipient')
+        )
+        BEGIN
+            CREATE UNIQUE INDEX UX_AppAnnouncementRecipient_AnnouncementID_Username
+            ON dbo.AppAnnouncementRecipient(AnnouncementID, Username)
         END
         """
     )
@@ -997,6 +1299,25 @@ def serialize_recipient_signature(recipients):
     return tuple(sorted(normalized))
 
 
+def get_request_field_set(data):
+    return set(
+        getattr(
+            data,
+            "model_fields_set",
+            getattr(data, "__fields_set__", set()),
+        )
+    )
+
+
+def deadline_time_to_form_parts(value):
+    if not value:
+        return "", "AM"
+    try:
+        return value.strftime("%I:%M").lstrip("0"), value.strftime("%p")
+    except Exception:
+        return normalize_text(value), "AM"
+
+
 def is_notification_refresh_relevant(status_changed, recipient_changed):
     return bool(status_changed or recipient_changed)
 
@@ -1177,6 +1498,10 @@ def insert_task_log(cursor, task_id, action_type, payload, actor_display_name):
         if not is_null_insert_id_error(e, "LogID"):
             raise
 
+    logger.warning(
+        "TaskFollow UPDATE/insert_task_log fallback is using SELECT MAX(LogID)+1; "
+        "run backend_server/sql/migrate_task_follow_log_identity.sql on production to make LogID IDENTITY."
+    )
     next_log_id = get_next_int_id(cursor, "dbo.TaskFollowLog", "LogID")
     cursor.execute(
         """
@@ -1552,6 +1877,7 @@ def get_task_follow_notifications(action_by: str, viewer_timezone: str = ""):
         ensure_task_follow_notification_read_table(cursor)
         ensure_task_follow_notification_dismiss_table(cursor)
         ensure_task_follow_recipient_table(cursor)
+        ensure_app_announcement_tables(cursor)
 
         cursor.execute(
             """
@@ -1633,20 +1959,32 @@ def get_task_follow_notifications(action_by: str, viewer_timezone: str = ""):
             items.append(
                 {
                     "id": f"task-{row.TaskID}",
+                    "notification_type": "task_follow",
                     "task_id": row.TaskID,
+                    "announcement_id": None,
                     "title": title,
                     "meta": " | ".join(meta_parts),
                     "task_section": "follow",
                     "is_read": is_read,
+                    "updated_at": row.UpdatedAt.strftime("%Y-%m-%d %H:%M:%S") if row.UpdatedAt else "",
                 }
             )
             if not is_read:
                 unread_count += 1
 
+        announcement_items, announcement_unread_count, _announcement_latest = build_announcement_items(
+            cursor,
+            action_by,
+            current_department,
+        )
+        items.extend(announcement_items)
+        unread_count += announcement_unread_count
+        items.sort(key=lambda item: normalize_text(item.get("updated_at")), reverse=True)
+
         return {
             "success": True,
             "unread_count": unread_count,
-            "data": items,
+            "data": items[:40],
         }
 
     except Exception as e:
@@ -1678,6 +2016,7 @@ def get_task_follow_notification_count(action_by: str):
         ensure_task_follow_notification_read_table(cursor)
         ensure_task_follow_notification_dismiss_table(cursor)
         ensure_task_follow_recipient_table(cursor)
+        ensure_app_announcement_tables(cursor)
 
         cursor.execute(
             """
@@ -1719,13 +2058,23 @@ def get_task_follow_notification_count(action_by: str):
             (action_by, action_by, action_by, action_by, 1 if is_technical_support_user else 0),
         )
         row = cursor.fetchone()
-        latest_updated_at = None
+        task_unread_count = int(getattr(row, "UnreadCount", 0) or 0) if row else 0
+        latest_values = []
         if row and getattr(row, "LatestUpdatedAt", None):
-            latest_updated_at = row.LatestUpdatedAt.strftime("%Y-%m-%d %H:%M:%S")
+            latest_values.append(row.LatestUpdatedAt)
+
+        announcement_unread_count, announcement_latest = get_announcement_unread_count(
+            cursor,
+            action_by,
+            current_department,
+        )
+        if announcement_latest:
+            latest_values.append(announcement_latest)
+        latest_updated_at = max(latest_values).strftime("%Y-%m-%d %H:%M:%S") if latest_values else None
 
         return {
             "success": True,
-            "unread_count": int(getattr(row, "UnreadCount", 0) or 0) if row else 0,
+            "unread_count": task_unread_count + announcement_unread_count,
             "latest_updated_at": latest_updated_at,
         }
 
@@ -1788,46 +2137,50 @@ def mark_task_follow_notifications_read(data: TaskFollowNotificationReadRequest)
 
         ensure_task_follow_notification_read_table(cursor)
         ensure_task_follow_recipient_table(cursor)
+        ensure_app_announcement_tables(cursor)
         user_department = get_user_department(cursor, action_by_username)
         is_technical_support_user = user_department == "Technical Support"
 
-        normalized_task_ids = []
-        for raw_task_id in data.task_ids or []:
-            try:
-                task_id = int(raw_task_id)
-            except (TypeError, ValueError):
-                continue
-            if task_id > 0 and task_id not in normalized_task_ids:
-                normalized_task_ids.append(task_id)
+        normalized_task_ids = normalize_positive_int_ids(data.task_ids)
+        normalized_announcement_ids = normalize_positive_int_ids(getattr(data, "announcement_ids", []))
 
-        if not normalized_task_ids:
-            return {"success": True, "marked_count": 0, "task_ids": []}
+        if not normalized_task_ids and not normalized_announcement_ids:
+            return {"success": True, "marked_count": 0, "task_ids": [], "announcement_ids": []}
 
-        placeholders = ",".join(["?"] * len(normalized_task_ids))
-        cursor.execute(
-            f"""
-            SELECT DISTINCT tf.TaskID
-            FROM dbo.TaskFollow tf
-            LEFT JOIN dbo.TaskFollowRecipient tr
-              ON tr.TaskID = tf.TaskID
-             AND tr.Username = ?
-            WHERE tf.IsActive = 1
-              AND (
-                    tr.TaskID IS NOT NULL
-                    OR (
-                        UPPER(ISNULL(tf.HandoffToType, '')) = 'USER'
-                        AND tf.HandoffToUsername = ?
-                    )
-                    OR (
-                        ? = 1
-                        AND UPPER(ISNULL(tf.HandoffToType, '')) = 'TEAM'
-                    )
-                  )
-              AND tf.TaskID IN ({placeholders})
-            """,
-            (action_by_username, action_by_username, 1 if is_technical_support_user else 0, *normalized_task_ids),
+        valid_task_ids = []
+        if normalized_task_ids:
+            placeholders = ",".join(["?"] * len(normalized_task_ids))
+            cursor.execute(
+                f"""
+                SELECT DISTINCT tf.TaskID
+                FROM dbo.TaskFollow tf
+                LEFT JOIN dbo.TaskFollowRecipient tr
+                  ON tr.TaskID = tf.TaskID
+                 AND tr.Username = ?
+                WHERE tf.IsActive = 1
+                  AND (
+                        tr.TaskID IS NOT NULL
+                        OR (
+                            UPPER(ISNULL(tf.HandoffToType, '')) = 'USER'
+                            AND tf.HandoffToUsername = ?
+                        )
+                        OR (
+                            ? = 1
+                            AND UPPER(ISNULL(tf.HandoffToType, '')) = 'TEAM'
+                        )
+                      )
+                  AND tf.TaskID IN ({placeholders})
+                """,
+                (action_by_username, action_by_username, 1 if is_technical_support_user else 0, *normalized_task_ids),
+            )
+            valid_task_ids = [int(row[0]) for row in cursor.fetchall() if row and row[0] is not None]
+
+        valid_announcement_ids = get_visible_announcement_ids(
+            cursor,
+            action_by_username,
+            user_department,
+            normalized_announcement_ids,
         )
-        valid_task_ids = [int(row[0]) for row in cursor.fetchall() if row and row[0] is not None]
 
         marked_count = 0
         for task_id in valid_task_ids:
@@ -1860,11 +2213,42 @@ def mark_task_follow_notifications_read(data: TaskFollowNotificationReadRequest)
             )
             marked_count += 1
 
+        for announcement_id in valid_announcement_ids:
+            cursor.execute(
+                """
+                IF EXISTS (
+                    SELECT 1
+                    FROM dbo.AppAnnouncementRead
+                    WHERE AnnouncementID = ? AND Username = ?
+                )
+                BEGIN
+                    UPDATE dbo.AppAnnouncementRead
+                    SET ReadAt = GETDATE()
+                    WHERE AnnouncementID = ? AND Username = ?
+                END
+                ELSE
+                BEGIN
+                    INSERT INTO dbo.AppAnnouncementRead (AnnouncementID, Username, ReadAt)
+                    VALUES (?, ?, GETDATE())
+                END
+                """,
+                (
+                    announcement_id,
+                    action_by_username,
+                    announcement_id,
+                    action_by_username,
+                    announcement_id,
+                    action_by_username,
+                ),
+            )
+            marked_count += 1
+
         conn.commit()
         return {
             "success": True,
             "marked_count": marked_count,
             "task_ids": valid_task_ids,
+            "announcement_ids": valid_announcement_ids,
         }
 
     except Exception as e:
@@ -1894,47 +2278,51 @@ def clear_task_follow_notifications(data: TaskFollowNotificationClearRequest):
 
         ensure_task_follow_notification_dismiss_table(cursor)
         ensure_task_follow_recipient_table(cursor)
+        ensure_app_announcement_tables(cursor)
         user_department = get_user_department(cursor, action_by_username)
         is_technical_support_user = user_department == "Technical Support"
 
-        normalized_task_ids = []
-        for raw_task_id in data.task_ids or []:
-            try:
-                task_id = int(raw_task_id)
-            except (TypeError, ValueError):
-                continue
-            if task_id > 0 and task_id not in normalized_task_ids:
-                normalized_task_ids.append(task_id)
+        normalized_task_ids = normalize_positive_int_ids(data.task_ids)
+        normalized_announcement_ids = normalize_positive_int_ids(getattr(data, "announcement_ids", []))
 
-        if not normalized_task_ids:
-            return {"success": True, "cleared_count": 0, "task_ids": []}
+        if not normalized_task_ids and not normalized_announcement_ids:
+            return {"success": True, "cleared_count": 0, "task_ids": [], "announcement_ids": []}
 
-        placeholders = ",".join(["?"] * len(normalized_task_ids))
-        cursor.execute(
-            f"""
-            SELECT DISTINCT tf.TaskID
-            FROM dbo.TaskFollow tf
-            LEFT JOIN dbo.TaskFollowRecipient tr
-              ON tr.TaskID = tf.TaskID
-             AND tr.Username = ?
-            WHERE tf.IsActive = 1
-              AND UPPER(tf.Status) <> 'DONE'
-              AND (
-                    tr.TaskID IS NOT NULL
-                    OR (
-                        UPPER(ISNULL(tf.HandoffToType, '')) = 'USER'
-                        AND tf.HandoffToUsername = ?
-                    )
-                    OR (
-                        ? = 1
-                        AND UPPER(ISNULL(tf.HandoffToType, '')) = 'TEAM'
-                    )
-                  )
-              AND tf.TaskID IN ({placeholders})
-            """,
-            (action_by_username, action_by_username, 1 if is_technical_support_user else 0, *normalized_task_ids),
+        valid_task_ids = []
+        if normalized_task_ids:
+            placeholders = ",".join(["?"] * len(normalized_task_ids))
+            cursor.execute(
+                f"""
+                SELECT DISTINCT tf.TaskID
+                FROM dbo.TaskFollow tf
+                LEFT JOIN dbo.TaskFollowRecipient tr
+                  ON tr.TaskID = tf.TaskID
+                 AND tr.Username = ?
+                WHERE tf.IsActive = 1
+                  AND UPPER(tf.Status) <> 'DONE'
+                  AND (
+                        tr.TaskID IS NOT NULL
+                        OR (
+                            UPPER(ISNULL(tf.HandoffToType, '')) = 'USER'
+                            AND tf.HandoffToUsername = ?
+                        )
+                        OR (
+                            ? = 1
+                            AND UPPER(ISNULL(tf.HandoffToType, '')) = 'TEAM'
+                        )
+                      )
+                  AND tf.TaskID IN ({placeholders})
+                """,
+                (action_by_username, action_by_username, 1 if is_technical_support_user else 0, *normalized_task_ids),
+            )
+            valid_task_ids = [int(row[0]) for row in cursor.fetchall() if row and row[0] is not None]
+
+        valid_announcement_ids = get_visible_announcement_ids(
+            cursor,
+            action_by_username,
+            user_department,
+            normalized_announcement_ids,
         )
-        valid_task_ids = [int(row[0]) for row in cursor.fetchall() if row and row[0] is not None]
 
         cleared_count = 0
         for task_id in valid_task_ids:
@@ -1967,11 +2355,42 @@ def clear_task_follow_notifications(data: TaskFollowNotificationClearRequest):
             )
             cleared_count += 1
 
+        for announcement_id in valid_announcement_ids:
+            cursor.execute(
+                """
+                IF EXISTS (
+                    SELECT 1
+                    FROM dbo.AppAnnouncementDismiss
+                    WHERE AnnouncementID = ? AND Username = ?
+                )
+                BEGIN
+                    UPDATE dbo.AppAnnouncementDismiss
+                    SET DismissedAt = GETDATE()
+                    WHERE AnnouncementID = ? AND Username = ?
+                END
+                ELSE
+                BEGIN
+                    INSERT INTO dbo.AppAnnouncementDismiss (AnnouncementID, Username, DismissedAt)
+                    VALUES (?, ?, GETDATE())
+                END
+                """,
+                (
+                    announcement_id,
+                    action_by_username,
+                    announcement_id,
+                    action_by_username,
+                    announcement_id,
+                    action_by_username,
+                ),
+            )
+            cleared_count += 1
+
         conn.commit()
         return {
             "success": True,
             "cleared_count": cleared_count,
             "task_ids": valid_task_ids,
+            "announcement_ids": valid_announcement_ids,
         }
 
     except Exception as e:
@@ -2288,13 +2707,465 @@ def create_task_follow(data: TaskFollowUpsertRequest):
             conn.close()
 
 
-@router.put("/task-follows/{task_id}")
-def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
+@router.patch("/task-follows/{task_id}")
+def patch_task_follow(task_id: int, data: TaskFollowPartialUpdateRequest):
+    request_started = time.perf_counter()
+    timing_steps = []
+    request_field_names = []
+
+    def mark_timing(label, started_at):
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        timing_steps.append((label, elapsed_ms))
+        return time.perf_counter()
+
     conn = None
     try:
+        stage_started = time.perf_counter()
         conn = get_connection()
         cursor = conn.cursor()
+        stage_started = mark_timing("connect_db", stage_started)
+
         ensure_task_follow_training_columns(cursor)
+        stage_started = mark_timing("ensure_task_follow_training_columns", stage_started)
+
+        action_by_username = normalize_username(data.action_by_username)
+        if not action_by_username:
+            return {"success": False, "message": "Missing action_by_username."}
+
+        cursor.execute("SELECT Username FROM dbo.Users WHERE Username = ?", (action_by_username,))
+        if not cursor.fetchone():
+            return {"success": False, "message": "User not found."}
+
+        previous_row = get_task_by_id(cursor, task_id)
+        if not previous_row:
+            return {"success": False, "message": "Task not found."}
+
+        request_fields = get_request_field_set(data) - {"action_by_username", "viewer_timezone"}
+        request_field_names = sorted(request_fields)
+        note_text = normalize_text(getattr(data, "note", ""))
+        changed_columns = []
+        params = []
+        updated_fields = {}
+        recipient_changed = False
+        status_changed = False
+
+        actor_display_name = get_user_display_name(cursor, action_by_username) or action_by_username
+        stage_started = mark_timing("query_current_user_task_display_name", stage_started)
+
+        current_raw_text = normalize_text(previous_row.MerchantRawText)
+        current_merchant_name = normalize_text(previous_row.MerchantName)
+        current_zip_code = normalize_text(previous_row.ZipCode)
+        raw_text = current_raw_text
+        merchant_name = current_merchant_name
+        zip_code = current_zip_code
+        merchant_changed = "merchant_raw_text" in request_fields
+        if merchant_changed:
+            raw_text, merchant_name, zip_code = parse_merchant_fields(data.merchant_raw_text)
+            if not raw_text or not merchant_name:
+                return {"success": False, "message": "Merchant name is required."}
+            changed_columns.extend(["MerchantRawText = ?", "MerchantName = ?", "ZipCode = ?"])
+            params.extend([raw_text, merchant_name, zip_code])
+            updated_fields.update(
+                {
+                    "merchant_raw_text": raw_text,
+                    "merchant_raw": raw_text,
+                    "merchant_name": merchant_name,
+                    "zip_code": zip_code,
+                }
+            )
+
+        if "phone" in request_fields:
+            phone = normalize_text(data.phone)
+            changed_columns.append("Phone = ?")
+            params.append(phone)
+            updated_fields["phone"] = phone
+
+        current_tracking = normalize_tracking_number(getattr(previous_row, "TrackingNumber", ""))
+        tracking_number = current_tracking
+        if "tracking_number" in request_fields:
+            tracking_number = normalize_tracking_number(data.tracking_number)
+            changed_columns.append("TrackingNumber = ?")
+            params.append(tracking_number)
+            updated_fields["tracking_number"] = tracking_number
+
+        if "problem_summary" in request_fields:
+            problem_summary = normalize_text(data.problem_summary)
+            changed_columns.append("ProblemSummary = ?")
+            params.append(problem_summary)
+            updated_fields["problem_summary"] = problem_summary
+            updated_fields["problem"] = problem_summary
+
+        previous_status = normalize_status(previous_row.Status)
+        status = previous_status
+        if "status" in request_fields:
+            status = normalize_status(data.status)
+            if status not in ALLOWED_STATUSES:
+                return {"success": False, "message": "Status is invalid."}
+            changed_columns.append("Status = ?")
+            params.append(status)
+            updated_fields["status"] = status
+            status_changed = previous_status != status
+
+        if status == "SHIP OUT" and not tracking_number:
+            return {"success": False, "message": "Tracking number is required for SHIP OUT."}
+        if status == "DONE" and not note_text:
+            return {"success": False, "message": "Note is required when status is DONE."}
+
+        resolved_viewer_timezone = normalize_timezone_name(getattr(data, "viewer_timezone", "")) or ""
+        deadline_stage_started = time.perf_counter()
+        previous_deadline = serialize_deadline(
+            previous_row.DeadlineDate,
+            previous_row.DeadlineTime,
+            deadline_at_utc=getattr(previous_row, "DeadlineAtUtc", None),
+            deadline_timezone=getattr(previous_row, "DeadlineTimezone", ""),
+            viewer_timezone=resolved_viewer_timezone,
+            merchant_raw_text=current_raw_text,
+            merchant_name=current_merchant_name,
+            zip_code=current_zip_code,
+        )
+        deadline_fields = {"deadline_date", "deadline_time", "deadline_period", "merchant_timezone"}
+        deadline_changed = bool(request_fields & deadline_fields) or merchant_changed
+        deadline_date_value = previous_row.DeadlineDate
+        if deadline_changed:
+            previous_time_text, previous_period_text = deadline_time_to_form_parts(previous_row.DeadlineTime)
+            deadline_date_text = (
+                data.deadline_date
+                if "deadline_date" in request_fields
+                else previous_deadline.get("deadline_original_date", "")
+            )
+            deadline_time_text = (
+                data.deadline_time
+                if "deadline_time" in request_fields
+                else previous_deadline.get("deadline_original_time", previous_time_text)
+            )
+            deadline_period_text = (
+                data.deadline_period
+                if "deadline_period" in request_fields
+                else previous_deadline.get("deadline_original_period", previous_period_text)
+            )
+            deadline_date, deadline_time, deadline_error = parse_deadline_parts(
+                deadline_date_text,
+                deadline_time_text,
+                deadline_period_text,
+            )
+            if deadline_error:
+                return {"success": False, "message": deadline_error}
+
+            deadline_timezone, deadline_timezone_source = resolve_deadline_timezone(
+                explicit_timezone=getattr(data, "merchant_timezone", "") if "merchant_timezone" in request_fields else "",
+                merchant_raw_text=raw_text,
+                merchant_name=merchant_name,
+                zip_code=zip_code,
+                existing_timezone=getattr(previous_row, "DeadlineTimezone", ""),
+                viewer_timezone=resolved_viewer_timezone,
+            )
+            if deadline_timezone_source == "invalid":
+                return {"success": False, "message": "Merchant timezone is invalid."}
+
+            deadline_at_utc = None
+            if deadline_date:
+                deadline_at_utc = convert_local_to_utc(
+                    datetime.combine(deadline_date, deadline_time or datetime.min.time()),
+                    deadline_timezone,
+                )
+
+            changed_columns.extend(
+                [
+                    "DeadlineDate = ?",
+                    "DeadlineTime = ?",
+                    "DeadlineAtUtc = ?",
+                    "DeadlineTimezone = ?",
+                ]
+            )
+            params.extend([deadline_date, deadline_time, deadline_at_utc, deadline_timezone or None])
+            deadline_date_value = deadline_date
+            deadline_payload = serialize_deadline(
+                deadline_date,
+                deadline_time,
+                deadline_at_utc=deadline_at_utc,
+                deadline_timezone=deadline_timezone,
+                viewer_timezone=resolved_viewer_timezone,
+                merchant_raw_text=raw_text,
+                merchant_name=merchant_name,
+                zip_code=zip_code,
+            )
+            updated_fields.update(
+                {
+                    "deadline": deadline_payload["deadline"],
+                    "deadline_date": deadline_payload["deadline_date"],
+                    "deadline_time": deadline_payload["deadline_time"],
+                    "deadline_period": deadline_payload["deadline_period"],
+                    "deadline_original_label": deadline_payload["deadline_original_label"],
+                    "deadline_original_date": deadline_payload["deadline_original_date"],
+                    "deadline_original_time": deadline_payload["deadline_original_time"],
+                    "deadline_original_period": deadline_payload["deadline_original_period"],
+                    "deadline_ust_label": deadline_payload["deadline_ust_label"],
+                    "deadline_ust_date": deadline_payload["deadline_ust_date"],
+                    "deadline_ust_time": deadline_payload["deadline_ust_time"],
+                    "deadline_ust_period": deadline_payload["deadline_ust_period"],
+                    "deadline_vn_label": deadline_payload["deadline_vn_label"],
+                    "deadline_vn_date": deadline_payload["deadline_vn_date"],
+                    "deadline_vn_time": deadline_payload["deadline_vn_time"],
+                    "deadline_vn_period": deadline_payload["deadline_vn_period"],
+                    "deadline_timezone": deadline_payload["deadline_timezone"],
+                    "merchant_timezone": deadline_payload["deadline_timezone"],
+                    "deadline_timezone_source": deadline_payload["deadline_timezone_source"],
+                    "deadline_viewer_timezone": deadline_payload["deadline_viewer_timezone"],
+                    "deadline_at_utc": deadline_payload["deadline_at_utc"],
+                }
+            )
+        mark_timing("deadline_timezone_resolve", deadline_stage_started)
+
+        handoff_fields = {
+            "handoff_to_type",
+            "handoff_to_username",
+            "handoff_to_display_name",
+            "handoff_to_usernames",
+            "handoff_to_display_names",
+        }
+        if request_fields & handoff_fields:
+            recipient_stage_started = time.perf_counter()
+            previous_recipients = get_task_recipients(cursor, task_id)
+            handoff_selection = normalize_handoff_targets(cursor, data)
+            handoff_to_type = handoff_selection["type"] or "TEAM"
+            handoff_to_username = handoff_selection["summary_username"]
+            handoff_to_display_name = handoff_selection["summary_display_name"] or "Tech Team"
+            handoff_recipients = handoff_selection["recipients"]
+            if handoff_to_type != "TEAM" and not handoff_recipients:
+                return {"success": False, "message": "Handoff target is required."}
+
+            previous_signature = serialize_recipient_signature(
+                previous_recipients
+                or [
+                    {
+                        "type": normalize_text(previous_row.HandoffToType).upper() or "TEAM",
+                        "username": normalize_username(previous_row.HandoffToUsername),
+                        "display_name": normalize_text(previous_row.HandoffToDisplayName),
+                    }
+                ]
+            )
+            new_recipients = handoff_recipients or [{"type": "TEAM", "username": "", "display_name": "Tech Team"}]
+            new_signature = serialize_recipient_signature(new_recipients)
+            recipient_changed = new_signature != previous_signature
+            if recipient_changed:
+                changed_columns.extend(
+                    [
+                        "HandoffFromUsername = ?",
+                        "HandoffFromDisplayName = ?",
+                        "HandoffToType = ?",
+                        "HandoffToUsername = ?",
+                        "HandoffToDisplayName = ?",
+                    ]
+                )
+                params.extend(
+                    [
+                        action_by_username,
+                        actor_display_name,
+                        handoff_to_type,
+                        handoff_to_username,
+                        handoff_to_display_name,
+                    ]
+                )
+                replace_task_recipients(cursor, task_id, new_recipients)
+                updated_fields.update(
+                    {
+                        "handoff_from_username": action_by_username,
+                        "handoff_from": actor_display_name,
+                        "handoff_to_type": handoff_to_type,
+                        "handoff_to_username": handoff_to_username,
+                        "handoff_to_usernames": [
+                            normalize_username(item.get("username"))
+                            for item in new_recipients
+                            if normalize_text(item.get("type")).upper() != "TEAM" and normalize_username(item.get("username"))
+                        ],
+                        "handoff_to_display_names": [
+                            normalize_text(item.get("display_name"))
+                            for item in new_recipients
+                            if normalize_text(item.get("display_name"))
+                        ],
+                        "handoff_to": handoff_to_display_name,
+                    }
+                )
+            mark_timing("recipients_read_delete_insert", recipient_stage_started)
+
+        training_form_json = None
+        if "training_form" in request_fields:
+            training_form_json = serialize_training_form_json(getattr(data, "training_form", []) or [])
+            changed_columns.append("TrainingFormJson = ?")
+            params.append(training_form_json or None)
+            updated_fields["training_form"] = parse_training_form_json(training_form_json)
+            updated_fields["has_training_form"] = bool(training_form_json)
+
+        if "training_started_at" in request_fields or (
+            "training_form" in request_fields
+            and training_form_json
+            and not getattr(previous_row, "TrainingStartedAt", None)
+        ):
+            training_started_at = getattr(previous_row, "TrainingStartedAt", None) or datetime.now()
+            changed_columns.append("TrainingStartedAt = ?")
+            params.append(training_started_at)
+            updated_fields["training_started_at"] = training_started_at.strftime("%d-%m-%Y %I:%M %p")
+
+        if "training_started_by_username" in request_fields or (
+            "training_form" in request_fields and training_form_json
+        ):
+            training_started_by_username = normalize_username(
+                getattr(data, "training_started_by_username", "")
+            ) or normalize_username(getattr(previous_row, "TrainingStartedByUsername", "")) or action_by_username
+            changed_columns.append("TrainingStartedByUsername = ?")
+            params.append(training_started_by_username)
+            updated_fields["training_started_by_username"] = training_started_by_username
+
+        if "training_started_by_display_name" in request_fields or (
+            "training_form" in request_fields and training_form_json
+        ):
+            training_started_by_display_name = normalize_text(
+                getattr(data, "training_started_by_display_name", "")
+            ) or normalize_text(getattr(previous_row, "TrainingStartedByDisplayName", "")) or actor_display_name
+            changed_columns.append("TrainingStartedByDisplayName = ?")
+            params.append(training_started_by_display_name)
+            updated_fields["training_started_by_display_name"] = training_started_by_display_name
+
+        if "training_completed_tabs" in request_fields:
+            training_completed_tabs_json = serialize_training_form_json(
+                getattr(data, "training_completed_tabs", []) or []
+            )
+            changed_columns.append("TrainingCompletedTabsJson = ?")
+            params.append(training_completed_tabs_json or None)
+            updated_fields["training_completed_tabs"] = parse_training_form_json(training_completed_tabs_json)
+
+        if note_text:
+            updated_fields["note"] = ""
+
+        if not changed_columns and not note_text:
+            return {
+                "success": True,
+                "ok": True,
+                "task_id": task_id,
+                "updated_fields": {},
+                "visible_on_board": is_task_in_board_scope(
+                    previous_status,
+                    previous_row.DeadlineDate,
+                    current_local_date(resolved_viewer_timezone),
+                ),
+                "notification_relevant": False,
+                "recipient_changed": False,
+                "status_changed": False,
+                "message": "No task changes to update.",
+            }
+
+        changed_columns.extend(
+            [
+                "CurrentNote = ?",
+                "LastUpdatedByUsername = ?",
+                "LastUpdatedByDisplayName = ?",
+                "UpdatedAt = GETDATE()",
+            ]
+        )
+        params.extend(["", action_by_username, actor_display_name, task_id])
+        update_stage_started = time.perf_counter()
+        cursor.execute(
+            f"""
+            UPDATE dbo.TaskFollow
+            SET {", ".join(changed_columns)}
+            WHERE TaskID = ? AND IsActive = 1
+            """,
+            tuple(params),
+        )
+        mark_timing("task_update", update_stage_started)
+
+        log_payload = {
+            "action_by_username": action_by_username,
+            "note": note_text,
+            "status": status,
+            "handoff_from_username": action_by_username,
+            "handoff_from_display_name": actor_display_name,
+            "handoff_to_type": updated_fields.get("handoff_to_type", normalize_text(previous_row.HandoffToType).upper() or "TEAM"),
+            "handoff_to_username": updated_fields.get("handoff_to_username", normalize_username(previous_row.HandoffToUsername)),
+            "handoff_to_display_name": updated_fields.get("handoff_to", normalize_text(previous_row.HandoffToDisplayName) or "Tech Team"),
+        }
+
+        log_stage_started = time.perf_counter()
+        if note_text:
+            insert_task_log(cursor, task_id, "UPDATE", log_payload, actor_display_name)
+        if recipient_changed:
+            insert_assignment_log(cursor, task_id, log_payload, actor_display_name)
+        mark_timing("task_follow_log_insert", log_stage_started)
+
+        commit_stage_started = time.perf_counter()
+        conn.commit()
+        mark_timing("conn_commit", commit_stage_started)
+        visible_on_board = is_task_in_board_scope(
+            status,
+            deadline_date_value,
+            current_local_date(resolved_viewer_timezone),
+        )
+        if changed_columns:
+            updated_fields["updated_at"] = datetime.now().strftime("%d-%m-%Y %I:%M %p")
+            updated_fields["is_optimistic"] = False
+            updated_fields["is_saving"] = False
+
+        notification_relevant = is_notification_refresh_relevant(
+            status_changed=status_changed,
+            recipient_changed=recipient_changed,
+        )
+        return {
+            "success": True,
+            "ok": True,
+            "task_id": task_id,
+            "updated_fields": updated_fields,
+            "visible_on_board": visible_on_board,
+            "notification_relevant": notification_relevant,
+            "recipient_changed": recipient_changed,
+            "status_changed": status_changed,
+            "message": (
+                "Task updated successfully."
+                if visible_on_board
+                else "Task updated successfully, but it is outside the current board filter."
+            ),
+        }
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"success": False, "message": str(e)}
+
+    finally:
+        total_ms = (time.perf_counter() - request_started) * 1000
+        timing_text = ", ".join(
+            f"{label}={elapsed_ms:.1f}ms"
+            for label, elapsed_ms in timing_steps
+        )
+        logger.info(
+            "TaskFollow UPDATE timing method=PATCH task_id=%s fields=%s total=%.1fms %s",
+            task_id,
+            ",".join(request_field_names) if request_field_names else "-",
+            total_ms,
+            timing_text,
+        )
+        if conn:
+            conn.close()
+
+
+@router.put("/task-follows/{task_id}")
+def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
+    request_started = time.perf_counter()
+    timing_steps = []
+
+    def mark_timing(label, started_at):
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        timing_steps.append((label, elapsed_ms))
+        return time.perf_counter()
+
+    conn = None
+    try:
+        stage_started = time.perf_counter()
+        conn = get_connection()
+        cursor = conn.cursor()
+        stage_started = mark_timing("connect_db", stage_started)
+
+        ensure_task_follow_training_columns(cursor)
+        stage_started = mark_timing("ensure_task_follow_training_columns", stage_started)
 
         action_by_username = normalize_username(data.action_by_username)
         if not action_by_username:
@@ -2316,7 +3187,8 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
             return {"success": False, "message": "Task not found."}
 
         previous_row = get_task_by_id(cursor, task_id)
-        previous_recipients = get_task_recipients(cursor, task_id)
+        actor_display_name = get_user_display_name(cursor, action_by_username) or action_by_username
+        stage_started = mark_timing("query_current_user_task_display_name", stage_started)
 
         raw_text, merchant_name, zip_code = parse_merchant_fields(data.merchant_raw_text)
         if not raw_text or not merchant_name:
@@ -2342,6 +3214,7 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
         if deadline_error:
             return {"success": False, "message": deadline_error}
 
+        deadline_stage_started = time.perf_counter()
         deadline_timezone, deadline_timezone_source = resolve_deadline_timezone(
             explicit_timezone=getattr(data, "merchant_timezone", ""),
             merchant_raw_text=raw_text,
@@ -2360,7 +3233,8 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
                 deadline_timezone,
             )
 
-        actor_display_name = get_user_display_name(cursor, action_by_username) or action_by_username
+        mark_timing("deadline_timezone_resolve", deadline_stage_started)
+
         handoff_selection = normalize_handoff_targets(cursor, data)
         handoff_to_type = handoff_selection["type"] or "TEAM"
         handoff_to_username = handoff_selection["summary_username"]
@@ -2393,6 +3267,7 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
         if not training_started_by_display_name and training_form_json:
             training_started_by_display_name = previous_training_started_by_display_name or actor_display_name
 
+        update_stage_started = time.perf_counter()
         cursor.execute(
             """
             UPDATE dbo.TaskFollow
@@ -2451,19 +3326,10 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
                 task_id,
             ),
         )
+        mark_timing("task_update", update_stage_started)
 
-        replace_task_recipients(cursor, task_id, handoff_recipients or [{"type": "TEAM", "username": "", "display_name": "Tech Team"}])
-
-        log_payload = {
-            "action_by_username": action_by_username,
-            "note": note_text,
-            "status": status,
-            "handoff_from_username": action_by_username,
-            "handoff_from_display_name": actor_display_name,
-            "handoff_to_type": handoff_to_type,
-            "handoff_to_username": handoff_to_username,
-            "handoff_to_display_name": handoff_to_display_name,
-        }
+        recipient_stage_started = time.perf_counter()
+        previous_recipients = get_task_recipients(cursor, task_id)
         previous_signature = serialize_recipient_signature(
             previous_recipients
             or [
@@ -2478,6 +3344,19 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
             handoff_recipients or [{"type": "TEAM", "username": "", "display_name": "Tech Team"}]
         )
         recipient_changed = new_signature != previous_signature
+        replace_task_recipients(cursor, task_id, handoff_recipients or [{"type": "TEAM", "username": "", "display_name": "Tech Team"}])
+        mark_timing("recipients_read_delete_insert", recipient_stage_started)
+
+        log_payload = {
+            "action_by_username": action_by_username,
+            "note": note_text,
+            "status": status,
+            "handoff_from_username": action_by_username,
+            "handoff_from_display_name": actor_display_name,
+            "handoff_to_type": handoff_to_type,
+            "handoff_to_username": handoff_to_username,
+            "handoff_to_display_name": handoff_to_display_name,
+        }
         previous_status = normalize_status(previous_row.Status) if previous_row else ""
         status_changed = previous_status != status
         notification_relevant = is_notification_refresh_relevant(
@@ -2485,12 +3364,16 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
             recipient_changed=recipient_changed,
         )
 
+        log_stage_started = time.perf_counter()
         if note_text:
             insert_task_log(cursor, task_id, "UPDATE", log_payload, actor_display_name)
         if recipient_changed:
             insert_assignment_log(cursor, task_id, log_payload, actor_display_name)
+        mark_timing("task_follow_log_insert", log_stage_started)
 
+        commit_stage_started = time.perf_counter()
         conn.commit()
+        mark_timing("conn_commit", commit_stage_started)
         updated_row = get_task_by_id(cursor, task_id)
         updated_history = get_task_logs(cursor, task_id)
         updated_recipients = get_task_recipients(cursor, task_id)
@@ -2534,6 +3417,17 @@ def update_task_follow(task_id: int, data: TaskFollowUpsertRequest):
         return {"success": False, "message": str(e)}
 
     finally:
+        total_ms = (time.perf_counter() - request_started) * 1000
+        timing_text = ", ".join(
+            f"{label}={elapsed_ms:.1f}ms"
+            for label, elapsed_ms in timing_steps
+        )
+        logger.info(
+            "TaskFollow UPDATE timing method=PUT task_id=%s fields=full_payload total=%.1fms %s",
+            task_id,
+            total_ms,
+            timing_text,
+        )
         if conn:
             conn.close()
 

@@ -6,6 +6,10 @@ from services.app_config import API_BASE_URL
 from utils.timezone_utils import detect_local_timezone_name
 
 
+def _debug_task_update(message):
+    print(f"[TaskFollow frontend update] {message}", flush=True)
+
+
 TASK_STATUSES = [
     "FOLLOW",
     "FOLLOW REQUEST",
@@ -99,11 +103,19 @@ def _normalize_handoff_option(option):
 def _normalize_notification_item(item):
     payload = item or {}
     task_id = payload.get("task_id")
+    announcement_id = payload.get("announcement_id")
+    notification_type = _normalize_text(payload.get("notification_type")) or (
+        "announcement" if announcement_id not in ("", None) else "task_follow"
+    )
     return {
-        "id": _normalize_text(payload.get("id")) or (f"task-{task_id}" if task_id not in ("", None) else ""),
+        "id": _normalize_text(payload.get("id"))
+        or (f"announcement-{announcement_id}" if notification_type == "announcement" else f"task-{task_id}"),
+        "notification_type": notification_type,
         "task_id": task_id,
+        "announcement_id": announcement_id,
         "title": _normalize_text(payload.get("title")) or "New task assigned",
         "meta": _normalize_text(payload.get("meta")) or "Tap to open Task Follow",
+        "message": _normalize_text(payload.get("message")),
         "task_section": _normalize_text(payload.get("task_section")) or "follow",
         "is_read": bool(payload.get("is_read")),
     }
@@ -163,7 +175,7 @@ class TaskService:
             "data": [_normalize_notification_item(item) for item in payload.get("data", [])],
         }
 
-    def mark_notifications_as_read(self, action_by, task_ids):
+    def mark_notifications_as_read(self, action_by, task_ids, announcement_ids=None):
         try:
             normalized_task_ids = []
             for raw_task_id in task_ids or []:
@@ -173,12 +185,21 @@ class TaskService:
                     continue
                 if task_id > 0 and task_id not in normalized_task_ids:
                     normalized_task_ids.append(task_id)
+            normalized_announcement_ids = []
+            for raw_announcement_id in announcement_ids or []:
+                try:
+                    announcement_id = int(raw_announcement_id)
+                except (TypeError, ValueError):
+                    continue
+                if announcement_id > 0 and announcement_id not in normalized_announcement_ids:
+                    normalized_announcement_ids.append(announcement_id)
 
             response = requests.post(
                 f"{API_BASE_URL}/task-follows/notifications/read",
                 json={
                     "action_by_username": action_by,
                     "task_ids": normalized_task_ids,
+                    "announcement_ids": normalized_announcement_ids,
                 },
                 timeout=20,
             )
@@ -188,7 +209,7 @@ class TaskService:
         except requests.exceptions.RequestException as exc:
             return {"success": False, "message": f"API connection error: {exc}"}
 
-    def clear_notifications(self, action_by, task_ids):
+    def clear_notifications(self, action_by, task_ids, announcement_ids=None):
         try:
             normalized_task_ids = []
             for raw_task_id in task_ids or []:
@@ -198,12 +219,21 @@ class TaskService:
                     continue
                 if task_id > 0 and task_id not in normalized_task_ids:
                     normalized_task_ids.append(task_id)
+            normalized_announcement_ids = []
+            for raw_announcement_id in announcement_ids or []:
+                try:
+                    announcement_id = int(raw_announcement_id)
+                except (TypeError, ValueError):
+                    continue
+                if announcement_id > 0 and announcement_id not in normalized_announcement_ids:
+                    normalized_announcement_ids.append(announcement_id)
 
             response = requests.post(
                 f"{API_BASE_URL}/task-follows/notifications/clear",
                 json={
                     "action_by_username": action_by,
                     "task_ids": normalized_task_ids,
+                    "announcement_ids": normalized_announcement_ids,
                 },
                 timeout=20,
             )
@@ -315,12 +345,24 @@ class TaskService:
         try:
             request_payload = deepcopy(payload or {})
             request_payload["viewer_timezone"] = self.viewer_timezone
-            response = requests.put(
-                f"{API_BASE_URL}/task-follows/{task_id}",
+            url = f"{API_BASE_URL}/task-follows/{task_id}"
+            _debug_task_update(f"before request task_id={task_id} url={url} payload_keys={sorted(request_payload.keys())}")
+            response = requests.patch(
+                url,
                 json=request_payload,
                 timeout=25,
             )
-            result = response.json()
+            _debug_task_update(f"response status task_id={task_id} status={response.status_code}")
+            try:
+                result = response.json()
+            except ValueError:
+                result = {}
+            if not isinstance(result, dict):
+                result = {"data": result}
+            _debug_task_update(f"parsed response task_id={task_id} result={result}")
+            if response.ok and result.get("success") is not False:
+                result["success"] = True
+                result.setdefault("message", "Task updated successfully.")
             if result.get("success") and result.get("data") is not None:
                 result["data"] = _normalize_task(result.get("data"))
             return result

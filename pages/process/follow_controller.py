@@ -7,6 +7,11 @@ import webbrowser
 import customtkinter as ctk
 
 from pages.process.layout import SETUP_BOARD_COMPACT_WIDTH
+from utils.window_icon_utils import apply_app_window_icon
+
+
+def _debug_task_update(message):
+    print(f"[TaskFollow frontend update] {message}", flush=True)
 
 
 class TaskFollowController:
@@ -74,6 +79,68 @@ class TaskFollowController:
         if history_box is None:
             return None
         return getattr(history_box, "_parent_canvas", None)
+
+    def _get_history_scrollbar(self):
+        page = self.page
+        history_box = getattr(page, "history_box", None)
+        if history_box is None:
+            return None
+        return getattr(history_box, "_scrollbar", None)
+
+    def _bind_history_scroll_widget(self, widget, include_children=False):
+        if widget is None:
+            return
+
+        if not getattr(widget, "_delta_one_history_scroll_bound", False):
+            widget.bind("<MouseWheel>", self._on_history_mousewheel, add="+")
+            widget.bind("<Button-4>", self._on_history_mousewheel, add="+")
+            widget.bind("<Button-5>", self._on_history_mousewheel, add="+")
+            widget._delta_one_history_scroll_bound = True
+
+        if include_children:
+            for child in widget.winfo_children():
+                self._bind_history_scroll_widget(child, include_children=True)
+
+    def _refresh_history_scroll_bindings(self):
+        page = self.page
+        history_box = getattr(page, "history_box", None)
+        if history_box is None:
+            return
+
+        self._bind_history_scroll_widget(history_box, include_children=True)
+        self._bind_history_scroll_widget(self._get_history_canvas(), include_children=True)
+        self._bind_history_scroll_widget(self._get_history_scrollbar(), include_children=True)
+
+        empty_label = getattr(history_box, "_history_empty_label", None)
+        if empty_label is not None and empty_label.winfo_exists():
+            self._bind_history_scroll_widget(empty_label, include_children=True)
+
+        for card in getattr(history_box, "_history_entry_cache", {}).values():
+            if card is not None and card.winfo_exists():
+                self._bind_history_scroll_widget(card, include_children=True)
+
+    def _on_history_mousewheel(self, event):
+        scroll_canvas = self._get_history_canvas()
+        if scroll_canvas is None:
+            return "break"
+
+        if getattr(event, "num", None) == 4:
+            scroll_units = -1
+        elif getattr(event, "num", None) == 5:
+            scroll_units = 1
+        else:
+            delta = int(getattr(event, "delta", 0) or 0)
+            if delta == 0:
+                return "break"
+            scroll_units = int(-delta / 120)
+            if scroll_units == 0:
+                scroll_units = -1 if delta > 0 else 1
+
+        try:
+            scroll_canvas.yview_scroll(scroll_units, "units")
+        except Exception:
+            return "break"
+        return "break"
 
     def _capture_history_scroll_fraction(self):
         scroll_canvas = self._get_history_canvas()
@@ -843,6 +910,7 @@ class TaskFollowController:
             page.follow_delete_button = form_widgets["follow_delete_button"]
             page.history_box = form_widgets["history_box"]
             page._tracking_controls_visible = None
+            self._refresh_history_scroll_bindings()
 
             page.phone_entry.bind("<KeyRelease>", page.on_phone_input)
             page.merchant_name_entry.bind(
@@ -1335,11 +1403,27 @@ class TaskFollowController:
             return
 
         if event_type == "task_save_succeeded":
-            page._finish_follow_action("save")
-            page._finish_follow_action("update")
-            if bool(event.get("notification_relevant")):
-                page.request_notification_refresh(force=True, duration_ms=20000)
-            messagebox.showinfo(self.get_task_module_label(), event.get("message", "Da luu task thanh cong."))
+            _debug_task_update(f"showing success message schedule item_id={event.get('item_id')} action={event.get('action')}")
+
+            def _show_success():
+                _debug_task_update(f"showing success message now item_id={event.get('item_id')} action={event.get('action')}")
+                page._finish_follow_action("save")
+                page._finish_follow_action("update")
+                if event.get("action") == "create":
+                    self.clear_follow_form()
+                    page.detail_hint.configure(text=self.get_new_task_hint())
+                    try:
+                        page.merchant_name_entry.focus()
+                    except Exception:
+                        pass
+                if bool(event.get("notification_relevant")):
+                    page.request_notification_refresh(force=True, duration_ms=20000)
+                messagebox.showinfo(self.get_task_module_label(), event.get("message", "Da luu task thanh cong."))
+
+            try:
+                page.after(1, _show_success)
+            except Exception:
+                _show_success()
             return
 
         if event_type == "task_delete_failed":
@@ -1991,7 +2075,12 @@ class TaskFollowController:
         canvas_y = page.follow_canvas.canvasy(event.y)
         for row_top, row_bottom, task in page.canvas_row_hits:
             if row_top <= canvas_y <= row_bottom:
-                self.load_task_detail(task.get("task_id"))
+                task_id = task.get("task_id")
+                active_task_id = page.active_task.get("task_id") if page.active_task else None
+                if str(active_task_id) == str(task_id):
+                    self.clear_follow_form()
+                    return
+                self.load_task_detail(task_id)
                 return
 
     def load_task_into_form(self, task):
@@ -2111,6 +2200,7 @@ class TaskFollowController:
         popup.geometry("420x260")
         popup.resizable(False, False)
         popup.configure(fg_color="#fbf5ec")
+        apply_app_window_icon(popup, page)
         popup.attributes("-topmost", True)
         popup.transient(page.detail_form)
         popup.update_idletasks()
@@ -2311,6 +2401,7 @@ class TaskFollowController:
                 history_box._history_empty_label = empty_label
             empty_label.pack(anchor="w", padx=8, pady=8)
             history_box._history_entry_order = []
+            self._refresh_history_scroll_bindings()
             self._restore_history_scroll_fraction(0.0)
             return
 
@@ -2342,6 +2433,7 @@ class TaskFollowController:
         history_box._history_entry_cache = entry_cache
         history_box._history_entry_order = desired_entry_ids
 
+        self._refresh_history_scroll_bindings()
         page.schedule_detail_scroll_update()
         self._restore_history_scroll_fraction(scroll_fraction)
 
@@ -2394,12 +2486,17 @@ class TaskFollowController:
         if not page._start_follow_action("update"):
             return
 
+        request_payload = page.service.build_task_update_payload(page.active_task, payload)
         page.store.update_item(
             page.active_task["task_id"],
             payload,
             actor_display_name=page.current_display_name,
             action_by=page.current_username,
+            request_payload=request_payload,
         )
+        if page.follow_poll_after_id is None:
+            _debug_task_update("starting follow poll after update request")
+            page.after(1, self.poll_follow_store_events)
 
     def on_follow_delete(self):
         page = self.page

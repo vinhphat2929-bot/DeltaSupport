@@ -18,6 +18,7 @@ from utils.theme import (
     INPUT_TEXT,
     INPUT_PLACEHOLDER,
 )
+from utils.window_icon_utils import apply_app_window_icon
 
 
 class SignUpPage(ctk.CTkToplevel):
@@ -28,6 +29,7 @@ class SignUpPage(ctk.CTkToplevel):
         self.geometry("460x820")
         self.resizable(False, False)
         self.configure(fg_color=BG_MAIN)
+        apply_app_window_icon(self, master)
 
         self.grab_set()
 

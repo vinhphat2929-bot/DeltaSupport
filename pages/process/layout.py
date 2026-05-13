@@ -2,6 +2,7 @@ import tkinter as tk
 import customtkinter as ctk
 
 from utils.timezone_utils import format_deadline_hint_text
+from utils.window_icon_utils import apply_app_window_icon
 
 
 SETUP_BOARD_COMPACT_WIDTH = 280
@@ -624,22 +625,42 @@ class ProcessLayout:
 
     def build_training_completion_popup(self, parent, colors, callbacks, time_slots):
         w = {}
-        popup = ctk.CTkToplevel(parent)
+        owner = None
+        try:
+            owner = parent.winfo_toplevel() if parent is not None else None
+        except Exception:
+            owner = None
+        popup = ctk.CTkToplevel(owner if owner is not None else parent)
         popup.title("Training Completion Details")
         popup.geometry("400x520")
         popup.resizable(False, False)
         popup.configure(fg_color="#fbf5ec")
+        apply_app_window_icon(popup, owner if owner is not None else parent)
         popup.attributes('-topmost', 'true')
-        popup.transient(parent)
+        try:
+            popup.transient(owner if owner is not None else parent)
+        except Exception:
+            pass
+        try:
+            popup.grab_set()
+            popup.focus_force()
+        except Exception:
+            pass
         
         popup.update_idletasks()
-        x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (400 // 2)
-        y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (520 // 2)
-        popup.geometry(f"+{x}+{y}")
+        anchor = owner if owner is not None else parent
+        try:
+            x = anchor.winfo_rootx() + (anchor.winfo_width() // 2) - (400 // 2)
+            y = anchor.winfo_rooty() + (anchor.winfo_height() // 2) - (520 // 2)
+            if y < 0:
+                y = 20
+            popup.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
         
         w["popup_window"] = popup
 
-        main_frame = ctk.CTkFrame(popup, fg_color="transparent")
+        main_frame = ctk.CTkScrollableFrame(popup, fg_color="transparent")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
         row = 0

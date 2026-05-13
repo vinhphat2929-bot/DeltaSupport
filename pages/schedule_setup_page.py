@@ -11,6 +11,7 @@ from services.schedule_setup_api_service import (
     save_schedule_setup_employee_api,
     set_schedule_setup_active_api,
 )
+from utils.window_icon_utils import apply_app_window_icon
 
 
 BG_MAIN = "transparent"
@@ -554,6 +555,7 @@ class ScheduleSetupPage(ctk.CTkFrame):
         win.geometry("620x860")
         win.minsize(600, 780)
         win.configure(fg_color="#f5ede0")
+        apply_app_window_icon(win, self)
         win.transient(self)
         win.grab_set()
 

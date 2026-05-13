@@ -4,9 +4,43 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 
+from utils.window_icon_utils import apply_app_window_icon
+
 
 class TaskSetupTrainingController:
     TAB_ORDER = ["I. SET UP HARDWARE", "II. SET UP POS", "III. TRAINING"]
+
+    def _training_info_preview_text(self, value, limit=96):
+        text = " ".join(str(value or "").strip().split())
+        if len(text) <= limit:
+            return text
+        return f"{text[: max(0, limit - 3)].rstrip()}..."
+
+    def _training_info_wrap_lines(self, value, limit=96, max_lines=3):
+        text = " ".join(str(value or "").strip().split())
+        if not text:
+            return [""]
+
+        words = text.split()
+        lines = []
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if current and len(candidate) > limit:
+                lines.append(current)
+                current = word
+                if len(lines) >= max_lines:
+                    break
+            else:
+                current = candidate
+
+        if len(lines) < max_lines and current:
+            lines.append(current)
+
+        consumed = " ".join(lines)
+        if len(lines) == max_lines and len(consumed) < len(text):
+            lines[-1] = f"{lines[-1][: max(0, limit - 3)].rstrip()}..."
+        return lines or [""]
 
     def __init__(self, page):
         self.page = page
@@ -38,6 +72,7 @@ class TaskSetupTrainingController:
                 fg_color="#ef4444",
                 hover_color="#dc2626",
                 text_color="#ffffff",
+                border_width=0,
                 text="DONE",
             )
             return
@@ -46,13 +81,16 @@ class TaskSetupTrainingController:
                 fg_color="#f59e0b",
                 hover_color="#d97706",
                 text_color="#ffffff",
+                border_width=0,
                 text="X",
             )
             return
         button.configure(
-            fg_color=page.INPUT_BG,
-            hover_color="#f0e8d8",
-            text_color=page.TEXT_MUTED,
+            fg_color="#f5ead8",
+            hover_color="#ead7b8",
+            text_color="#6b4f35",
+            border_width=1,
+            border_color="#d6b485",
             text="-",
         )
 
@@ -538,9 +576,11 @@ class TaskSetupTrainingController:
                     width=78,
                     height=26,
                     corner_radius=8,
-                    fg_color=page.INPUT_BG,
-                    hover_color="#f0e8d8",
-                    text_color=page.TEXT_MUTED,
+                    fg_color="#f5ead8",
+                    hover_color="#ead7b8",
+                    text_color="#6b4f35",
+                    border_width=1,
+                    border_color="#d6b485",
                     font=("Segoe UI", 10, "bold"),
                     command=toggle_fn,
                 )
@@ -776,11 +816,13 @@ class TaskSetupTrainingController:
             if not page._start_follow_action("update"):
                 messagebox.showwarning("Training Save", "Action dang duoc xu ly. Vui long doi vai giay roi bam lai.")
                 return
+            request_payload = page.service.build_task_update_payload(page.active_task, payload)
             page.store.update_item(
                 page.active_task["task_id"],
                 payload,
                 actor_display_name=page.current_display_name,
                 action_by=page.current_username,
+                request_payload=request_payload,
             )
             return
         self.open_training_completion_popup(action_type="complete")
@@ -932,11 +974,13 @@ class TaskSetupTrainingController:
         if not page._start_follow_action("update"):
             messagebox.showwarning("Training Save", "Action dang duoc xu ly. Vui long doi vai giay roi bam lai.")
             return
+        request_payload = page.service.build_task_update_payload(page.active_task, payload)
         page.store.update_item(
             page.active_task["task_id"],
             payload,
             actor_display_name=page.current_display_name,
             action_by=page.current_username,
+            request_payload=request_payload,
         )
         self.close_training_completion_popup()
 
@@ -1094,11 +1138,13 @@ class TaskSetupTrainingController:
             return
         if not page._start_follow_action("update"):
             return
+        request_payload = page.service.build_task_update_payload(page.active_task, payload)
         page.store.update_item(
             page.active_task["task_id"],
             payload,
             actor_display_name=page.current_display_name,
             action_by=page.current_username,
+            request_payload=request_payload,
         )
 
     def on_view_training_info(self):
@@ -1119,6 +1165,7 @@ class TaskSetupTrainingController:
         popup.title("Setup / Training Info")
         popup.geometry("980x720")
         popup.minsize(820, 560)
+        apply_app_window_icon(popup, page)
         popup.transient(page.winfo_toplevel())
         popup.grab_set()
         popup.grid_columnconfigure(0, weight=1)
@@ -1164,7 +1211,7 @@ class TaskSetupTrainingController:
             wraplength=900,
         ).grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 14))
 
-        content = ctk.CTkScrollableFrame(
+        content = ctk.CTkFrame(
             popup,
             fg_color="#fbf5ec",
             corner_radius=14,
@@ -1173,108 +1220,79 @@ class TaskSetupTrainingController:
         )
         content.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 12))
         content.grid_columnconfigure(0, weight=1)
+        content.grid_rowconfigure(0, weight=1)
+
+        text_wrap = ctk.CTkFrame(content, fg_color="#fffaf2", corner_radius=10, border_width=0)
+        text_wrap.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=10)
+        text_wrap.grid_columnconfigure(0, weight=1)
+        text_wrap.grid_rowconfigure(0, weight=1)
+
+        info_text = tk.Text(
+            text_wrap,
+            bg="#fffaf2",
+            fg=page.TEXT_DARK,
+            bd=0,
+            highlightthickness=0,
+            relief="flat",
+            wrap="word",
+            padx=14,
+            pady=12,
+            font=("Segoe UI", 10),
+            spacing1=2,
+            spacing2=2,
+            spacing3=8,
+            cursor="arrow",
+        )
+        info_text.grid(row=0, column=0, sticky="nsew")
+        y_scrollbar = ctk.CTkScrollbar(content, orientation="vertical", command=info_text.yview)
+        y_scrollbar.grid(row=0, column=1, sticky="ns", padx=(8, 10), pady=10)
+        info_text.configure(yscrollcommand=y_scrollbar.set)
+
+        info_text.tag_configure("section", background="#d8b57b", foreground="#1f1a16", font=("Segoe UI", 12, "bold"), spacing1=8, spacing3=4)
+        info_text.tag_configure("subtitle", foreground="#6b4f35", font=("Segoe UI", 9), lmargin1=8, lmargin2=8)
+        info_text.tag_configure("group", background="#f7ead7", foreground="#7c2d12", font=("Segoe UI", 10, "bold"), lmargin1=8, lmargin2=8)
+        info_text.tag_configure("step", foreground="#166534", font=("Segoe UI", 10, "bold"))
+        info_text.tag_configure("item", foreground=page.TEXT_DARK, font=("Segoe UI", 10), lmargin1=18, lmargin2=72)
+        info_text.tag_configure("result_done", foreground="#166534", font=("Segoe UI", 10, "bold"))
+        info_text.tag_configure("result_x", foreground="#92400e", font=("Segoe UI", 10, "bold"))
+        info_text.tag_configure("muted", foreground="#6b7280", font=("Segoe UI", 10))
+        info_text.tag_configure("note", foreground="#6b4f35", font=("Segoe UI", 9), lmargin1=72, lmargin2=72)
+
+        def append_text(text, tag=None):
+            start = info_text.index("end-1c")
+            info_text.insert("end", text)
+            end = info_text.index("end-1c")
+            if tag:
+                info_text.tag_add(tag, start, end)
 
         for section in sections:
-            section_card = ctk.CTkFrame(
-                content,
-                fg_color="#ffffff",
-                corner_radius=12,
-                border_width=1,
-                border_color="#e5d7c3",
-            )
-            section_card.pack(fill="x", padx=8, pady=(8, 4))
-            section_card.grid_columnconfigure(1, weight=1)
-            section_card.grid_columnconfigure(3, weight=1)
-
-            ctk.CTkLabel(
-                section_card,
-                text=str(section.get("title", "")).strip(),
-                font=("Segoe UI", 15, "bold"),
-                text_color=page.TEXT_DARK,
-                anchor="w",
-                justify="left",
-            ).grid(row=0, column=0, columnspan=4, sticky="ew", padx=14, pady=(12, 2))
-
+            title = str(section.get("title", "")).strip()
             subtitle = str(section.get("subtitle", "")).strip()
-            next_row = 1
+            append_text(f"{title}\n", "section")
             if subtitle:
-                ctk.CTkLabel(
-                    section_card,
-                    text=subtitle,
-                    font=("Segoe UI", 10),
-                    text_color=page.TEXT_MUTED,
-                    anchor="w",
-                    justify="left",
-                    wraplength=900,
-                ).grid(row=1, column=0, columnspan=4, sticky="ew", padx=14, pady=(0, 8))
-                next_row = 2
+                append_text(f"{subtitle}\n", "subtitle")
 
             for row in section.get("rows", []):
                 row_kind = str(row.get("kind", "normal")).strip().lower()
                 if row_kind == "group":
-                    ctk.CTkLabel(
-                        section_card,
-                        text=str(row.get("label", "")).strip(),
-                        font=("Segoe UI", 11, "bold"),
-                        text_color="#7c2d12",
-                        anchor="w",
-                        justify="left",
-                        wraplength=900,
-                    ).grid(row=next_row, column=0, columnspan=4, sticky="ew", padx=14, pady=(10, 4))
-                    next_row += 1
+                    append_text(f"\n{str(row.get('label', '')).strip()}\n", "group")
                     continue
 
                 step_text = str(row.get("step", "")).strip() or "-"
-                label_text = str(row.get("label", "")).strip()
+                label_text = " ".join(str(row.get("label", "")).strip().split())
                 result_text = str(row.get("result", "")).strip().upper() or "-"
-                note_text = str(row.get("note", "")).strip() or "-"
-                if result_text == "DONE":
-                    result_fg = "#dcfce7"
-                    result_text_color = "#166534"
-                elif result_text == "X":
-                    result_fg = "#fef3c7"
-                    result_text_color = "#92400e"
-                else:
-                    result_fg = "#f3f4f6"
-                    result_text_color = "#6b7280"
+                note_text = " ".join(str(row.get("note", "")).strip().split())
+                result_tag = "result_done" if result_text == "DONE" else ("result_x" if result_text == "X" else "muted")
 
-                ctk.CTkLabel(
-                    section_card,
-                    text=step_text,
-                    font=("Segoe UI", 11, "bold"),
-                    text_color=page.TEXT_DARK,
-                    width=44,
-                    anchor="w",
-                ).grid(row=next_row, column=0, sticky="nw", padx=(14, 8), pady=(4, 6))
-                ctk.CTkLabel(
-                    section_card,
-                    text=label_text,
-                    font=("Segoe UI", 11),
-                    text_color=page.TEXT_DARK,
-                    anchor="w",
-                    justify="left",
-                    wraplength=440,
-                ).grid(row=next_row, column=1, sticky="ew", padx=(0, 10), pady=(4, 6))
-                ctk.CTkLabel(
-                    section_card,
-                    text=result_text,
-                    font=("Segoe UI", 10, "bold"),
-                    text_color=result_text_color,
-                    fg_color=result_fg,
-                    corner_radius=8,
-                    width=60,
-                    height=26,
-                ).grid(row=next_row, column=2, sticky="nw", padx=(0, 10), pady=(4, 6))
-                ctk.CTkLabel(
-                    section_card,
-                    text=note_text,
-                    font=("Segoe UI", 11),
-                    text_color=page.TEXT_MUTED if note_text == "-" else page.TEXT_DARK,
-                    anchor="w",
-                    justify="left",
-                    wraplength=320,
-                ).grid(row=next_row, column=3, sticky="ew", padx=(0, 14), pady=(4, 6))
-                next_row += 1
+                append_text(f"{step_text:<4}", "step")
+                append_text(f"{label_text}  ", "item")
+                append_text(f"[{result_text}]\n", result_tag)
+                if note_text:
+                    append_text(f"     Note: {note_text}\n", "note")
+                else:
+                    append_text("\n")
+
+        info_text.configure(state="disabled")
 
         footer = ctk.CTkFrame(popup, fg_color="transparent")
         footer.grid(row=2, column=0, sticky="e", padx=18, pady=(0, 18))

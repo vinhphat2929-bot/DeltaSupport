@@ -1,8 +1,11 @@
 {
-  "version": "2026.4.25.1",
-  "release_notes": "",
+  "version": "05112026.01",
+  "release_notes": "Thêm chức năng Remember Login",
   "minimum_supported_version": "",
-  "published_at": "",
+  "published_at": "2026-05-11 02:11:00 +07:00",
   "mandatory": false,
+  "file_name": "DELTA_ONE.exe",
+  "file_size": 24004828,
+  "download_url": "https://drive.google.com/uc?export=download&id=1mz74VbVrrKHFKP2Cy9dFnbmTUaREzLyU",
   "windows_exe_path": ""
 }

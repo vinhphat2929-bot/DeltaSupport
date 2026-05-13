@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -120,6 +120,15 @@ class DeleteUserRequest(BaseModel):
     reason: str = ""
 
 
+class AppAnnouncementCreateRequest(BaseModel):
+    action_by: str
+    title: str
+    message: str
+    target_type: str = "ALL"
+    target_department: str = ""
+    target_usernames: List[str] = []
+
+
 class SyncCardToTicketLogRequest(BaseModel):
     username: str
     shop_raw_text: str
@@ -162,14 +171,41 @@ class TaskFollowUpsertRequest(BaseModel):
     training_completed_tabs: List[str] = []
 
 
+class TaskFollowPartialUpdateRequest(BaseModel):
+    action_by_username: str
+    merchant_raw_text: Optional[str] = None
+    merchant_timezone: Optional[str] = None
+    viewer_timezone: Optional[str] = None
+    phone: Optional[str] = None
+    tracking_number: Optional[str] = None
+    problem_summary: Optional[str] = None
+    handoff_to_type: Optional[str] = None
+    handoff_to_username: Optional[str] = None
+    handoff_to_display_name: Optional[str] = None
+    status: Optional[str] = None
+    deadline_date: Optional[str] = None
+    deadline_time: Optional[str] = None
+    deadline_period: Optional[str] = None
+    note: Optional[str] = None
+    handoff_to_usernames: Optional[List[str]] = None
+    handoff_to_display_names: Optional[List[str]] = None
+    training_form: Optional[List[Dict[str, Any]]] = None
+    training_started_at: Optional[str] = None
+    training_started_by_username: Optional[str] = None
+    training_started_by_display_name: Optional[str] = None
+    training_completed_tabs: Optional[List[str]] = None
+
+
 class TaskFollowNotificationReadRequest(BaseModel):
     action_by_username: str
     task_ids: List[int] = []
+    announcement_ids: List[int] = []
 
 
 class TaskFollowNotificationClearRequest(BaseModel):
     action_by_username: str
     task_ids: List[int] = []
+    announcement_ids: List[int] = []
 
 
 class TaskReportUpsertRequest(BaseModel):

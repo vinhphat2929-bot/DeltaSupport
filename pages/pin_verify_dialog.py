@@ -2,6 +2,8 @@
 
 import customtkinter as ctk
 
+from utils.window_icon_utils import apply_app_window_icon
+
 
 BG_MAIN = "#1a0f0b"
 BG_PANEL = "#2a1812"
@@ -34,6 +36,7 @@ class PinVerifyDialog(ctk.CTkToplevel):
         self.minsize(430, 780)
         self.resizable(False, False)
         self.configure(fg_color=BG_MAIN)
+        apply_app_window_icon(self, master)
 
         self.transient(master)
         self.lift()

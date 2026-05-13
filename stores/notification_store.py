@@ -75,10 +75,22 @@ class NotificationStore(BaseStore):
         normalized_items = []
         for index, item in enumerate(items or []):
             payload = deepcopy(item or {})
+            notification_type = str(payload.get("notification_type", "") or "").strip() or (
+                "announcement" if payload.get("announcement_id") not in ("", None) else "task_follow"
+            )
+            payload["notification_type"] = notification_type
             payload["task_id"] = payload.get("task_id", -(index + 1))
+            if payload["task_id"] in ("", None):
+                payload["task_id"] = -(index + 1)
+            payload["announcement_id"] = payload.get("announcement_id")
             payload["id"] = str(payload.get("id", f"notif-{index}")).strip() or f"notif-{index}"
-            payload["title"] = str(payload.get("title", "")).strip() or "New task assigned"
-            payload["meta"] = str(payload.get("meta", "")).strip() or "Tap to open Task Follow"
+            payload["title"] = str(payload.get("title", "")).strip() or (
+                "Announcement" if notification_type == "announcement" else "New task assigned"
+            )
+            payload["meta"] = str(payload.get("meta", "")).strip() or (
+                "Tap to read announcement" if notification_type == "announcement" else "Tap to open Task Follow"
+            )
+            payload["message"] = str(payload.get("message", "") or "").strip()
             payload["task_section"] = str(payload.get("task_section", "follow")).strip() or "follow"
             backend_is_read = bool(payload.get("is_read"))
             payload["is_read"] = backend_is_read or self._is_task_pending_read(payload.get("task_id"))
@@ -211,6 +223,7 @@ class NotificationStore(BaseStore):
 
     def _extract_task_ids_for_notice(self, notice_id):
         task_ids = set()
+        announcement_ids = set()
         with self._lock:
             for item in list(self.items_by_id.values()):
                 current_id = str((item or {}).get("id", "")).strip()
@@ -222,7 +235,13 @@ class NotificationStore(BaseStore):
                     continue
                 if task_id > 0:
                     task_ids.add(task_id)
-        return task_ids
+                try:
+                    announcement_id = int((item or {}).get("announcement_id"))
+                except (TypeError, ValueError):
+                    continue
+                if announcement_id > 0:
+                    announcement_ids.add(announcement_id)
+        return task_ids, announcement_ids
 
     def mark_as_read(self, notification_id, action_by=""):
         notice_id = str(notification_id or "").strip()
@@ -230,7 +249,7 @@ class NotificationStore(BaseStore):
             return
 
         action_by = str(action_by or "").strip() or self.last_action_by
-        task_ids = self._extract_task_ids_for_notice(notice_id)
+        task_ids, announcement_ids = self._extract_task_ids_for_notice(notice_id)
         if task_ids:
             with self._read_sync_lock:
                 self.pending_read_task_ids.update(task_ids)
@@ -251,11 +270,27 @@ class NotificationStore(BaseStore):
             source="local-read",
         )
         self._schedule_read_sync(action_by)
+        if announcement_ids:
+            result = self.service.mark_notifications_as_read(action_by, [], list(announcement_ids))
+            if not result.get("success"):
+                self.push_event(
+                    "notifications_read_sync_failed",
+                    message=result.get("message", "Unable to sync announcement read status."),
+                )
 
     def mark_all_as_read(self, action_by=""):
         action_by = str(action_by or "").strip() or self.last_action_by
         task_ids = self._get_all_task_ids()
-        if not task_ids:
+        announcement_ids = []
+        with self._lock:
+            for item in self.items_by_id.values():
+                try:
+                    announcement_id = int((item or {}).get("announcement_id"))
+                except (TypeError, ValueError):
+                    continue
+                if announcement_id > 0 and announcement_id not in announcement_ids:
+                    announcement_ids.append(announcement_id)
+        if not task_ids and not announcement_ids:
             return
 
         with self._lock:
@@ -277,11 +312,27 @@ class NotificationStore(BaseStore):
             source="local-read-all",
         )
         self._schedule_read_sync(action_by, delay_seconds=0.1)
+        if announcement_ids:
+            result = self.service.mark_notifications_as_read(action_by, [], announcement_ids)
+            if not result.get("success"):
+                self.push_event(
+                    "notifications_read_sync_failed",
+                    message=result.get("message", "Unable to sync announcement read status."),
+                )
 
     def clear_all(self, action_by=""):
         action_by = str(action_by or "").strip() or self.last_action_by
         task_ids = self._get_all_task_ids()
-        if not task_ids:
+        announcement_ids = []
+        with self._lock:
+            for item in self.items_by_id.values():
+                try:
+                    announcement_id = int((item or {}).get("announcement_id"))
+                except (TypeError, ValueError):
+                    continue
+                if announcement_id > 0 and announcement_id not in announcement_ids:
+                    announcement_ids.append(announcement_id)
+        if not task_ids and not announcement_ids:
             self.push_event(
                 "notifications_cleared",
                 items=[],
@@ -290,7 +341,7 @@ class NotificationStore(BaseStore):
             )
             return
 
-        result = self.service.clear_notifications(action_by, task_ids)
+        result = self.service.clear_notifications(action_by, task_ids, announcement_ids)
         if not result.get("success"):
             self.push_event(
                 "notifications_clear_failed",
@@ -303,8 +354,13 @@ class NotificationStore(BaseStore):
             for task_id in (result.get("task_ids") or [])
             if str(task_id).strip().isdigit() and int(task_id) > 0
         }
+        cleared_announcement_ids = {
+            int(announcement_id)
+            for announcement_id in (result.get("announcement_ids") or [])
+            if str(announcement_id).strip().isdigit() and int(announcement_id) > 0
+        }
         with self._lock:
-            if cleared_task_ids:
+            if cleared_task_ids or cleared_announcement_ids:
                 keep_ids = []
                 new_items = {}
                 for item_id in self.ordered_ids:
@@ -313,7 +369,11 @@ class NotificationStore(BaseStore):
                         task_id = int(item.get("task_id"))
                     except (TypeError, ValueError):
                         task_id = None
-                    if task_id in cleared_task_ids:
+                    try:
+                        announcement_id = int(item.get("announcement_id"))
+                    except (TypeError, ValueError):
+                        announcement_id = None
+                    if task_id in cleared_task_ids or announcement_id in cleared_announcement_ids:
                         continue
                     keep_ids.append(item_id)
                     new_items[item_id] = deepcopy(item)

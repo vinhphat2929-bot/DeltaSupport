@@ -99,6 +99,12 @@ class ProcessPage(ctk.CTkFrame):
         self.follow_poll_after_id = None
         self.follow_refresh_button = None
         self.follow_action_cooldown_ms = 3000
+        self.follow_action_cooldown_by_key = {
+            "save": 500,
+            "update": 500,
+            "delete": 800,
+            "refresh": 3000,
+        }
         self.follow_action_ready_at = {}
         self.follow_action_inflight = set()
         self.follow_action_after_ids = {}
@@ -807,9 +813,11 @@ class ProcessPage(ctk.CTkFrame):
             return False
 
         self.follow_action_inflight.add(action_key)
-        self.follow_action_ready_at[action_key] = time.monotonic() + (
-            self.follow_action_cooldown_ms / 1000.0
+        cooldown_ms = self.follow_action_cooldown_by_key.get(
+            action_key,
+            self.follow_action_cooldown_ms,
         )
+        self.follow_action_ready_at[action_key] = time.monotonic() + (cooldown_ms / 1000.0)
         self._schedule_follow_action_state_refresh(action_key)
         self.update_follow_form_mode()
         return True
@@ -1168,6 +1176,11 @@ class ProcessPage(ctk.CTkFrame):
         target = getattr(self, "active_scroll_target", None)
         if target == "detail" and hasattr(self, "detail_canvas"):
             self.detail_canvas.yview_scroll(-int(event.delta / 120), "units")
+        elif target == "history":
+            history_box = getattr(self, "history_box", None)
+            history_canvas = getattr(history_box, "_parent_canvas", None) if history_box is not None else None
+            if history_canvas is not None:
+                history_canvas.yview_scroll(-int(event.delta / 120), "units")
         elif target == "training_canvas" and getattr(self, "training_canvas", None) is not None:
             try:
                 parent_canvas = getattr(self.detail_form, "_parent_canvas", None)

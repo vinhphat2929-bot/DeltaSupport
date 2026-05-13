@@ -2738,6 +2738,10 @@
   ('utils.timezone_utils',
    'C:\\Users\\AIO - MKT PC\\Desktop\\DeltaSupport\\utils\\timezone_utils.py',
    'PYMODULE'),
+  ('utils.window_icon_utils',
+   'C:\\Users\\AIO - MKT '
+   'PC\\Desktop\\DeltaSupport\\utils\\window_icon_utils.py',
+   'PYMODULE'),
   ('uuid',
    'C:\\Users\\AIO - MKT '
    'PC\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\uuid.py',

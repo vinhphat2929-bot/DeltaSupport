@@ -64,7 +64,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='DELTA ONE',
+    name='DELTA_ONE',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

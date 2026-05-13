@@ -1,9 +1,11 @@
 import os
+import tempfile
 import tkinter as tk
 import customtkinter as ctk
 from PIL import Image
 from tkinter import messagebox
 from datetime import datetime
+from pathlib import Path
 import time
 
 from app_version import APP_NAME, APP_VERSION
@@ -29,6 +31,7 @@ from services.auth_service import (
 )
 from stores.notification_store import NotificationStore
 from utils.resource_utils import get_data_path
+from utils.window_icon_utils import apply_app_window_icon, get_app_bitmap_icon_path
 
 # =========================================================
 # DELTA ONE - DARK EARTH THEME
@@ -88,6 +91,7 @@ class MainAppPage(ctk.CTkFrame):
         self.lock_icon = None
         self.settings_icon = None
         self.logout_icon = None
+        self._window_bitmap_icon_path = ""
         self.menu_open = False
         self.reflow_after_id = None
         self.header_compact_mode = False
@@ -231,6 +235,55 @@ class MainAppPage(ctk.CTkFrame):
         except Exception:
             return None
 
+    def get_window_bitmap_icon_path(self):
+        if self._window_bitmap_icon_path and os.path.exists(self._window_bitmap_icon_path):
+            return self._window_bitmap_icon_path
+
+        bitmap_icon_path = get_app_bitmap_icon_path()
+        if bitmap_icon_path and os.path.exists(bitmap_icon_path):
+            self._window_bitmap_icon_path = bitmap_icon_path
+            return self._window_bitmap_icon_path
+
+        root = self.winfo_toplevel()
+        try:
+            bitmap_icon_path = str(getattr(root, "_bitmap_icon_path", "") or "").strip()
+            if bitmap_icon_path and os.path.exists(bitmap_icon_path):
+                self._window_bitmap_icon_path = bitmap_icon_path
+                return self._window_bitmap_icon_path
+        except Exception:
+            pass
+
+        for filename in ("app_v3.ico", "app.ico"):
+            candidate = get_data_path(filename)
+            if os.path.exists(candidate):
+                self._window_bitmap_icon_path = candidate
+                return self._window_bitmap_icon_path
+
+        icon_path = get_data_path("icon.png")
+        if not os.path.exists(icon_path):
+            return ""
+
+        try:
+            generated_icon_path = Path(tempfile.gettempdir()) / "DeltaOne" / "notification_window_icon.ico"
+            generated_icon_path.parent.mkdir(parents=True, exist_ok=True)
+            with Image.open(icon_path) as source_image:
+                icon_image = source_image.convert("RGBA")
+            icon_image.thumbnail((256, 256), Image.Resampling.LANCZOS)
+            square_icon = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+            square_icon.alpha_composite(
+                icon_image,
+                ((256 - icon_image.width) // 2, (256 - icon_image.height) // 2),
+            )
+            square_icon.save(
+                generated_icon_path,
+                format="ICO",
+                sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)],
+            )
+            self._window_bitmap_icon_path = str(generated_icon_path)
+            return self._window_bitmap_icon_path
+        except Exception:
+            return ""
+
     def _bind_topbar_action(self, container, circle, icon_label, text_label, command, normal_fg, hover_fg):
         def apply_state(active):
             circle.configure(
@@ -282,12 +335,23 @@ class MainAppPage(ctk.CTkFrame):
         items = self.notification_store.get_all() or self.user.get("notification_items", []) or []
         normalized = []
         for index, item in enumerate(items):
+            announcement_id = item.get("announcement_id")
+            notification_type = str(item.get("notification_type", "") or "").strip() or (
+                "announcement" if announcement_id not in ("", None) else "task_follow"
+            )
             normalized.append(
                 {
                     "id": item.get("id", f"notif-{index}"),
+                    "notification_type": notification_type,
                     "task_id": item.get("task_id"),
-                    "title": str(item.get("title", "")).strip() or "New task assigned",
-                    "meta": str(item.get("meta", "")).strip() or "Tap to open Task Follow",
+                    "announcement_id": announcement_id,
+                    "title": str(item.get("title", "")).strip() or (
+                        "Announcement" if notification_type == "announcement" else "New task assigned"
+                    ),
+                    "meta": str(item.get("meta", "")).strip() or (
+                        "Tap to read announcement" if notification_type == "announcement" else "Tap to open Task Follow"
+                    ),
+                    "message": str(item.get("message", "") or "").strip(),
                     "task_section": str(item.get("task_section", "follow")).strip() or "follow",
                     "is_read": bool(item.get("is_read")),
                 }
@@ -782,11 +846,160 @@ class MainAppPage(ctk.CTkFrame):
                     action_by=str(self.user.get("username", "")).strip(),
                 )
                 self.hide_notification_popup()
+                if str(item.get("notification_type", "")).strip() == "announcement":
+                    self.show_announcement_dialog(item)
+                    return
                 self.show_process_page(
                     item.get("task_section", "follow"),
                     initial_task_id=item.get("task_id"),
                 )
                 return
+
+    def show_announcement_dialog(self, item):
+        title = str((item or {}).get("title", "") or "").strip() or "Announcement"
+        message = str((item or {}).get("message", "") or "").strip()
+        meta = str((item or {}).get("meta", "") or "").strip()
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Delta One Notification")
+        dialog.geometry("500x360")
+        dialog.minsize(460, 320)
+        dialog.configure(fg_color=BG_APP)
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+        dialog.lift()
+        dialog.attributes("-topmost", True)
+        dialog.after(250, lambda: dialog.attributes("-topmost", False))
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(0, weight=1)
+
+        try:
+            root = self.winfo_toplevel()
+            apply_app_window_icon(dialog, root)
+            icon_refs = list(getattr(root, "_icon_photo", []) or [])
+            if icon_refs:
+                dialog.iconphoto(True, *icon_refs)
+        except Exception:
+            pass
+
+        card = ctk.CTkFrame(
+            dialog,
+            fg_color=CONTENT_INNER,
+            corner_radius=18,
+            border_width=1,
+            border_color=TOPBAR_BORDER,
+        )
+        card.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
+        card.grid_columnconfigure(0, weight=1)
+        card.grid_rowconfigure(2, weight=1)
+
+        header = ctk.CTkFrame(card, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 8))
+        header.grid_columnconfigure(1, weight=1)
+
+        announcement_icon = self.safe_load_icon("icon.png", (42, 42))
+        if announcement_icon is not None:
+            dialog._announcement_icon = announcement_icon
+            ctk.CTkLabel(
+                header,
+                text="",
+                image=announcement_icon,
+            ).grid(row=0, column=0, sticky="n", padx=(0, 12))
+        else:
+            badge = ctk.CTkFrame(
+                header,
+                width=42,
+                height=42,
+                corner_radius=14,
+                fg_color=BTN_ACTIVE,
+            )
+            badge.grid(row=0, column=0, sticky="n", padx=(0, 12))
+            badge.grid_propagate(False)
+            ctk.CTkLabel(
+                badge,
+                text="!",
+                font=("Segoe UI", 22, "bold"),
+                text_color=TEXT_DARK,
+            ).place(relx=0.5, rely=0.48, anchor="center")
+
+        title_stack = ctk.CTkFrame(header, fg_color="transparent")
+        title_stack.grid(row=0, column=1, sticky="ew")
+        ctk.CTkLabel(
+            title_stack,
+            text="Delta One Notification",
+            font=("Segoe UI", 12, "bold"),
+            text_color=TEXT_MUTED_DARK,
+            anchor="w",
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            title_stack,
+            text=title,
+            font=("Segoe UI", 19, "bold"),
+            text_color=TEXT_DARK,
+            anchor="w",
+            wraplength=360,
+            justify="left",
+        ).pack(anchor="w", pady=(2, 0))
+
+        if meta:
+            ctk.CTkLabel(
+                card,
+                text=meta,
+                font=("Segoe UI", 11),
+                text_color=TEXT_MUTED_DARK,
+                anchor="w",
+                wraplength=430,
+                justify="left",
+            ).grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 10))
+
+        body = ctk.CTkTextbox(
+            card,
+            fg_color=INPUT_BG,
+            text_color=TEXT_DARK,
+            border_width=1,
+            border_color=INPUT_BORDER,
+            corner_radius=12,
+            font=("Segoe UI", 13),
+            wrap="word",
+        )
+        body.grid(row=2, column=0, sticky="nsew", padx=18, pady=(0, 16))
+        body.insert("1.0", message or meta or "No message content.")
+        body.configure(state="disabled")
+
+        button_row = ctk.CTkFrame(card, fg_color="transparent")
+        button_row.grid(row=3, column=0, sticky="e", padx=18, pady=(0, 18))
+
+        def close_dialog():
+            try:
+                dialog.grab_release()
+            except Exception:
+                pass
+            dialog.destroy()
+
+        ctk.CTkButton(
+            button_row,
+            text="Close",
+            width=110,
+            height=38,
+            corner_radius=12,
+            fg_color=BTN_ACTIVE,
+            hover_color=BTN_ACTIVE_HOVER,
+            text_color=TEXT_DARK,
+            font=("Segoe UI", 13, "bold"),
+            command=close_dialog,
+        ).pack(side="right")
+
+        dialog.bind("<Escape>", lambda _event: close_dialog())
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+
+        try:
+            dialog.update_idletasks()
+            root = self.winfo_toplevel()
+            x = root.winfo_rootx() + max(20, (root.winfo_width() - dialog.winfo_width()) // 2)
+            y = root.winfo_rooty() + max(20, (root.winfo_height() - dialog.winfo_height()) // 2)
+            dialog.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
 
     def get_role(self):
         return str(self.user.get("role", "TS Junior")).strip()
@@ -1381,7 +1594,7 @@ class MainAppPage(ctk.CTkFrame):
         task_items = [
             ("Report", "report", lambda: self.show_process_page("report")),
             ("Follow", "follow", lambda: self.show_process_page("follow")),
-            ("Setup / Training", "setup_training", lambda: self.show_process_page("setup_training")),
+            ("Set up / Training", "setup_training", lambda: self.show_process_page("setup_training")),
         ]
 
         for i, (name, section_key, command) in enumerate(task_items):
@@ -2627,7 +2840,7 @@ class MainAppPage(ctk.CTkFrame):
 
         self.settings_update_status_label = ctk.CTkLabel(
             update_card,
-            text="Chua kiem tra update.",
+            text="Update status has not been checked yet.",
             font=("Segoe UI", 13),
             text_color=TEXT_MUTED_DARK,
             wraplength=820,
@@ -2641,7 +2854,7 @@ class MainAppPage(ctk.CTkFrame):
 
         self.settings_check_update_button = ctk.CTkButton(
             update_action_row,
-            text="Check for Update",
+            text="Check for Updates",
             width=180,
             height=42,
             corner_radius=12,
@@ -2753,7 +2966,7 @@ class MainAppPage(ctk.CTkFrame):
             command=self.open_change_pin_flow,
         ).pack(anchor="w", padx=20, pady=(0, 18))
 
-        if self.get_role_key() in ["admin", "management", "manager"]:
+        if self.can_access("Admin Approval"):
             admin_card = ctk.CTkFrame(
                 scroll,
                 fg_color=CONTENT_INNER,

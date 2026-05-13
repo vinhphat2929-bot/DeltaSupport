@@ -8,6 +8,10 @@ from stores.base_store import BaseStore
 from utils.timezone_utils import build_deadline_preview
 
 
+def _debug_task_update(message):
+    print(f"[TaskFollow frontend update] {message}", flush=True)
+
+
 class TaskStore(BaseStore):
     def __init__(self, service=None, ttl_seconds=45):
         super().__init__(ttl_seconds=ttl_seconds)
@@ -562,7 +566,7 @@ class TaskStore(BaseStore):
             status_changed=bool(result.get("status_changed")),
         )
 
-    def update_item(self, task_id, payload, actor_display_name, action_by):
+    def update_item(self, task_id, payload, actor_display_name, action_by, request_payload=None):
         original_item = self.get_by_id(task_id)
         if not original_item:
             self.push_event("task_save_failed", action="update", item_id=task_id, message="Task not found in cache.")
@@ -585,12 +589,20 @@ class TaskStore(BaseStore):
 
         threading.Thread(
             target=self._update_worker,
-            args=(task_id, deepcopy(original_item), deepcopy(payload), actor_display_name, action_by),
+            args=(
+                task_id,
+                deepcopy(original_item),
+                deepcopy(payload),
+                deepcopy(request_payload if request_payload is not None else payload),
+                actor_display_name,
+                action_by,
+            ),
             daemon=True,
         ).start()
 
-    def _update_worker(self, task_id, original_item, payload, actor_display_name, action_by):
-        result = self.service.update_task(task_id, payload)
+    def _update_worker(self, task_id, original_item, payload, request_payload, actor_display_name, action_by):
+        _debug_task_update(f"before request worker task_id={task_id} request_keys={sorted((request_payload or {}).keys())}")
+        result = self.service.update_task(task_id, request_payload)
         if not result.get("success"):
             with self._lock:
                 self.upsert_one(original_item)
@@ -606,9 +618,13 @@ class TaskStore(BaseStore):
             )
             return
 
+        _debug_task_update(f"parsed response in worker task_id={task_id} result={result}")
         item = result.get("data")
         if not item:
             item = self._build_task_from_payload(payload, task_id, actor_display_name, existing=original_item)
+            updated_fields = result.get("updated_fields") or {}
+            if isinstance(updated_fields, dict):
+                item.update(deepcopy(updated_fields))
             item["is_optimistic"] = False
             item["is_saving"] = False
 
@@ -623,11 +639,7 @@ class TaskStore(BaseStore):
                 self.remove(task_id)
             self._save_active_snapshot()
 
-        if self._task_matches_current_view(item):
-            self.push_event("task_upserted", item=self.get_by_id(task_id), item_id=task_id, optimistic=False)
-        else:
-            self.push_event("task_removed", item_id=task_id, optimistic=False)
-
+        _debug_task_update(f"calling success callback task_id={task_id}")
         self.push_event(
             "task_save_succeeded",
             action="update",
@@ -638,6 +650,11 @@ class TaskStore(BaseStore):
             recipient_changed=bool(result.get("recipient_changed")),
             status_changed=bool(result.get("status_changed")),
         )
+
+        if self._task_matches_current_view(item):
+            self.push_event("task_upserted", item=self.get_by_id(task_id), item_id=task_id, optimistic=False)
+        else:
+            self.push_event("task_removed", item_id=task_id, optimistic=False)
 
     def delete_item(self, task_id, action_by):
         original_item = self.get_by_id(task_id)

@@ -1,10 +1,17 @@
 # pages/admin_approval_page.py
 
 import customtkinter as ctk
+import os
+import tempfile
+import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox
 import requests
+from PIL import Image
 
 from services.app_config import API_BASE_URL
+from utils.resource_utils import get_data_path
+from utils.window_icon_utils import apply_app_window_icon, get_app_bitmap_icon_path
 
 # ===== THEME =====
 BG_MAIN = "#1a0f0b"
@@ -94,11 +101,15 @@ class AdminApprovalPage(ctk.CTkToplevel):
         self.current_team = str(current_team or "General").strip() or "General"
         self.users_data = []
         self.filtered_users = []
+        self._window_icon_ref = None
+        self._window_bitmap_icon_path = ""
+        self._content_icon_image = None
 
         self.title("Admin Manager")
         self.geometry("1020x680")
         self.minsize(920, 620)
         self.configure(fg_color=BG_MAIN)
+        self.apply_window_icon(self)
 
         self.transient(master)
         self.lift()
@@ -107,6 +118,79 @@ class AdminApprovalPage(ctk.CTkToplevel):
 
         self.build_ui()
         self.load_users()
+
+    def apply_window_icon(self, window):
+        self._window_bitmap_icon_path = apply_app_window_icon(window, self)
+
+    def get_window_bitmap_icon_path(self):
+        if self._window_bitmap_icon_path and os.path.exists(self._window_bitmap_icon_path):
+            return self._window_bitmap_icon_path
+
+        bitmap_icon_path = get_app_bitmap_icon_path()
+        if bitmap_icon_path and os.path.exists(bitmap_icon_path):
+            self._window_bitmap_icon_path = bitmap_icon_path
+            return self._window_bitmap_icon_path
+
+        for owner in (self.master, self.winfo_toplevel()):
+            try:
+                bitmap_icon_path = str(getattr(owner, "_bitmap_icon_path", "") or "").strip()
+                if bitmap_icon_path and os.path.exists(bitmap_icon_path):
+                    self._window_bitmap_icon_path = bitmap_icon_path
+                    return self._window_bitmap_icon_path
+            except Exception:
+                pass
+
+        for filename in ("app_v3.ico", "app.ico"):
+            candidate = get_data_path(filename)
+            if os.path.exists(candidate):
+                self._window_bitmap_icon_path = candidate
+                return self._window_bitmap_icon_path
+
+        icon_path = get_data_path("icon.png")
+        if not os.path.exists(icon_path):
+            return ""
+
+        try:
+            generated_icon_path = Path(tempfile.gettempdir()) / "DeltaOne" / "admin_window_icon.ico"
+            generated_icon_path.parent.mkdir(parents=True, exist_ok=True)
+            with Image.open(icon_path) as source_image:
+                icon_image = source_image.convert("RGBA")
+            icon_image.thumbnail((256, 256), Image.Resampling.LANCZOS)
+            square_icon = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+            square_icon.alpha_composite(
+                icon_image,
+                ((256 - icon_image.width) // 2, (256 - icon_image.height) // 2),
+            )
+            square_icon.save(
+                generated_icon_path,
+                format="ICO",
+                sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)],
+            )
+            self._window_bitmap_icon_path = str(generated_icon_path)
+            return self._window_bitmap_icon_path
+        except Exception:
+            return ""
+
+        try:
+            icon_path = get_data_path("icon.png")
+            if os.path.exists(icon_path):
+                self._window_icon_ref = tk.PhotoImage(file=icon_path)
+                window.iconphoto(True, self._window_icon_ref)
+        except Exception:
+            pass
+
+    def get_content_icon_image(self, size=(34, 34)):
+        if self._content_icon_image is not None:
+            return self._content_icon_image
+        try:
+            icon_path = get_data_path("icon.png")
+            if os.path.exists(icon_path):
+                image = Image.open(icon_path).convert("RGBA")
+                self._content_icon_image = ctk.CTkImage(image, size=size)
+                return self._content_icon_image
+        except Exception:
+            pass
+        return None
 
     # =========================================================
     # UI
@@ -123,7 +207,18 @@ class AdminApprovalPage(ctk.CTkToplevel):
             border_color=BORDER,
         )
         header.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
-        header.grid_columnconfigure(0, weight=1)
+        header.grid_columnconfigure(1, weight=1)
+
+        header_icon = self.get_content_icon_image((42, 42))
+        if header_icon is not None:
+            ctk.CTkLabel(header, text="", image=header_icon).grid(
+                row=0,
+                column=0,
+                rowspan=2,
+                sticky="w",
+                padx=(20, 12),
+                pady=16,
+            )
 
         title = ctk.CTkLabel(
             header,
@@ -131,7 +226,7 @@ class AdminApprovalPage(ctk.CTkToplevel):
             font=ctk.CTkFont(size=26, weight="bold"),
             text_color=TEXT_MAIN,
         )
-        title.grid(row=0, column=0, sticky="w", padx=20, pady=(16, 4))
+        title.grid(row=0, column=1, sticky="w", padx=(0, 20), pady=(16, 4))
 
         subtitle = ctk.CTkLabel(
             header,
@@ -139,7 +234,7 @@ class AdminApprovalPage(ctk.CTkToplevel):
             font=ctk.CTkFont(size=13),
             text_color=TEXT_SUB,
         )
-        subtitle.grid(row=1, column=0, sticky="w", padx=20, pady=(0, 14))
+        subtitle.grid(row=1, column=1, sticky="w", padx=(0, 20), pady=(0, 14))
 
         toolbar = ctk.CTkFrame(
             self,
@@ -221,6 +316,20 @@ class AdminApprovalPage(ctk.CTkToplevel):
             command=self.load_users,
         ).grid(row=0, column=4, pady=6)
 
+        if self.can_send_announcement():
+            ctk.CTkButton(
+                top_tools,
+                text="Notify",
+                width=110,
+                height=40,
+                corner_radius=12,
+                fg_color=BTN_LOG,
+                hover_color=BTN_LOG_HOVER,
+                text_color=TEXT_MAIN,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                command=self.open_announcement_popup,
+            ).grid(row=0, column=5, padx=(10, 0), pady=6)
+
         self.user_list_frame = ctk.CTkScrollableFrame(
             toolbar, fg_color=BG_PANEL, corner_radius=16
         )
@@ -252,6 +361,19 @@ class AdminApprovalPage(ctk.CTkToplevel):
     def can_approve_user(self):
         return self.current_role in ["admin", "management", "manager"]
 
+    def can_send_announcement(self):
+        return self.current_role in [
+            "admin",
+            "management",
+            "manager",
+            "hr",
+            "leader",
+            "ts leader",
+            "sale leader",
+            "mt leader",
+            "cs leader",
+        ]
+
     def can_manage_target(self, department, team):
         if self.current_role in ["admin", "management", "manager", "hr"]:
             return True
@@ -280,6 +402,302 @@ class AdminApprovalPage(ctk.CTkToplevel):
     def api_put(self, endpoint, payload=None):
         url = f"{API_BASE_URL}{endpoint}"
         return requests.put(url, json=payload or {}, timeout=15)
+
+    def api_post(self, endpoint, payload=None):
+        url = f"{API_BASE_URL}{endpoint}"
+        return requests.post(url, json=payload or {}, timeout=15)
+
+    def open_announcement_popup(self):
+        popup = ctk.CTkToplevel(self)
+        popup.title("Send Notification")
+        popup.geometry("560x650")
+        popup.minsize(520, 580)
+        popup.configure(fg_color=BG_MAIN)
+        self.apply_window_icon(popup)
+        popup.transient(self)
+        popup.lift()
+        popup.attributes("-topmost", True)
+        popup.after(250, lambda: popup.attributes("-topmost", False))
+        popup.grid_columnconfigure(0, weight=1)
+
+        content = ctk.CTkFrame(
+            popup,
+            fg_color=BG_PANEL,
+            corner_radius=18,
+            border_width=1,
+            border_color=BORDER,
+        )
+        content.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
+        popup.grid_rowconfigure(0, weight=1)
+        content.grid_columnconfigure(0, weight=1)
+
+        popup_header = ctk.CTkFrame(content, fg_color="transparent")
+        popup_header.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 8))
+        popup_header.grid_columnconfigure(1, weight=1)
+
+        popup_icon = self.get_content_icon_image((36, 36))
+        if popup_icon is not None:
+            ctk.CTkLabel(popup_header, text="", image=popup_icon).grid(
+                row=0,
+                column=0,
+                sticky="w",
+                padx=(0, 10),
+            )
+
+        ctk.CTkLabel(
+            popup_header,
+            text="Send Notification",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=TEXT_MAIN,
+        ).grid(row=0, column=1, sticky="w")
+
+        title_entry = ctk.CTkEntry(
+            content,
+            height=40,
+            fg_color=BG_INPUT,
+            text_color=TEXT_DARK,
+            border_color=BORDER,
+            placeholder_text="Title",
+        )
+        title_entry.grid(row=1, column=0, sticky="ew", padx=18, pady=(6, 10))
+
+        target_values = ["ALL", "DEPARTMENT"]
+        target_type_combo = ctk.CTkComboBox(
+            content,
+            values=target_values,
+            height=38,
+            fg_color=BG_INPUT,
+            text_color=TEXT_DARK,
+            border_color=BORDER,
+            button_color=BTN_PRIMARY,
+            button_hover_color=BTN_PRIMARY_HOVER,
+            dropdown_fg_color=BG_INPUT,
+            dropdown_text_color=TEXT_DARK,
+        )
+        target_type_combo.set("ALL")
+        target_type_combo.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 10))
+
+        department_values = DEPARTMENTS
+        department_combo = ctk.CTkComboBox(
+            content,
+            values=department_values,
+            height=38,
+            fg_color=BG_INPUT,
+            text_color=TEXT_DARK,
+            border_color=BORDER,
+            button_color=BTN_PRIMARY,
+            button_hover_color=BTN_PRIMARY_HOVER,
+            dropdown_fg_color=BG_INPUT,
+            dropdown_text_color=TEXT_DARK,
+        )
+        department_combo.set(self.current_department if self.current_department in department_values else department_values[0])
+        department_combo.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 10))
+
+        department_target_combo = ctk.CTkComboBox(
+            content,
+            values=["ALL IN DEPARTMENT", "SELECT USERS"],
+            height=38,
+            fg_color=BG_INPUT,
+            text_color=TEXT_DARK,
+            border_color=BORDER,
+            button_color=BTN_PRIMARY,
+            button_hover_color=BTN_PRIMARY_HOVER,
+            dropdown_fg_color=BG_INPUT,
+            dropdown_text_color=TEXT_DARK,
+        )
+        department_target_combo.set("ALL IN DEPARTMENT")
+        department_target_combo.grid(row=4, column=0, sticky="ew", padx=18, pady=(0, 10))
+
+        user_section = ctk.CTkFrame(
+            content,
+            fg_color=BG_CARD,
+            corner_radius=12,
+            border_width=1,
+            border_color=BORDER,
+        )
+        user_section.grid(row=5, column=0, sticky="nsew", padx=18, pady=(0, 10))
+        user_section.grid_columnconfigure(0, weight=1)
+
+        user_header = ctk.CTkFrame(user_section, fg_color="transparent")
+        user_header.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 6))
+        selected_user_label = ctk.CTkLabel(
+            user_header,
+            text="Select users",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=TEXT_MAIN,
+            anchor="w",
+        )
+        selected_user_label.grid(row=0, column=0, sticky="w")
+
+        user_scroll = ctk.CTkScrollableFrame(
+            user_section,
+            height=130,
+            fg_color=BG_PANEL,
+            corner_radius=10,
+        )
+        user_scroll.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        user_scroll.grid_columnconfigure(0, weight=1)
+
+        user_check_vars = {}
+
+        def update_selected_user_label():
+            selected_count = len([name for name, var in user_check_vars.items() if bool(var.get())])
+            selected_user_label.configure(
+                text=f"Select users ({selected_count} selected)" if selected_count else "Select users"
+            )
+
+        def render_department_users():
+            for widget in user_scroll.winfo_children():
+                widget.destroy()
+            user_check_vars.clear()
+
+            selected_department = department_combo.get().strip()
+            selectable_users = []
+            for raw_user in sorted(
+                self.users_data or [],
+                key=lambda item: (
+                    str(item.get("full_name", "") or item.get("username", "")).lower(),
+                    str(item.get("username", "")).lower(),
+                ),
+            ):
+                username = str(raw_user.get("username", "") or "").strip()
+                if not username or username.lower() == self.admin_name.strip().lower():
+                    continue
+                status = str(raw_user.get("status", "") or "").strip().lower()
+                if status and status not in {"approved", "active"}:
+                    continue
+                if str(raw_user.get("department", "") or "").strip() != selected_department:
+                    continue
+                selectable_users.append(raw_user)
+
+            if not selectable_users:
+                ctk.CTkLabel(
+                    user_scroll,
+                    text="No approved users in this department.",
+                    text_color=TEXT_SUB,
+                    font=ctk.CTkFont(size=12),
+                ).grid(row=0, column=0, sticky="w", padx=10, pady=10)
+                update_selected_user_label()
+                return
+
+            for row_index, user in enumerate(selectable_users):
+                username = str(user.get("username", "") or "").strip()
+                full_name = str(user.get("full_name", "") or "").strip()
+                label_text = full_name or username
+                if username and username.lower() not in label_text.lower():
+                    label_text = f"{label_text} ({username})"
+                var = tk.BooleanVar(value=False)
+                user_check_vars[username] = var
+                ctk.CTkCheckBox(
+                    user_scroll,
+                    text=label_text,
+                    variable=var,
+                    command=update_selected_user_label,
+                    fg_color=BTN_PRIMARY,
+                    hover_color=BTN_PRIMARY_HOVER,
+                    checkmark_color=TEXT_MAIN,
+                    text_color=TEXT_MAIN,
+                    font=ctk.CTkFont(size=12),
+                ).grid(row=row_index, column=0, sticky="w", padx=10, pady=5)
+            update_selected_user_label()
+
+        def sync_target_state(_value=None):
+            target_type = target_type_combo.get().strip().upper()
+            is_department = target_type == "DEPARTMENT"
+            is_select_users = is_department and department_target_combo.get().strip().upper() == "SELECT USERS"
+            department_combo.configure(
+                state="normal" if is_department else "disabled",
+                fg_color=BG_INPUT if is_department else "#8d7c6b",
+                text_color=TEXT_DARK if is_department else "#f0e5d8",
+                button_color=BTN_PRIMARY if is_department else "#7a6655",
+                button_hover_color=BTN_PRIMARY_HOVER if is_department else "#7a6655",
+            )
+            department_target_combo.configure(
+                state="normal" if is_department else "disabled",
+                fg_color=BG_INPUT if is_department else "#8d7c6b",
+                text_color=TEXT_DARK if is_department else "#f0e5d8",
+                button_color=BTN_PRIMARY if is_department else "#7a6655",
+                button_hover_color=BTN_PRIMARY_HOVER if is_department else "#7a6655",
+            )
+            if is_select_users:
+                render_department_users()
+                user_section.grid()
+            else:
+                user_section.grid_remove()
+
+        target_type_combo.configure(command=sync_target_state)
+        department_combo.configure(command=sync_target_state)
+        department_target_combo.configure(command=sync_target_state)
+        sync_target_state()
+
+        message_box = ctk.CTkTextbox(
+            content,
+            height=190,
+            fg_color=BG_INPUT,
+            text_color=TEXT_DARK,
+            border_color=BORDER,
+            border_width=1,
+        )
+        message_box.grid(row=6, column=0, sticky="nsew", padx=18, pady=(0, 14))
+        content.grid_rowconfigure(6, weight=1)
+
+        def send_notification():
+            title = title_entry.get().strip()
+            message = message_box.get("1.0", "end").strip()
+            target_scope = target_type_combo.get().strip().upper()
+            department_target = department_target_combo.get().strip().upper()
+            target_type = "ALL"
+            target_department = ""
+            if target_scope == "DEPARTMENT":
+                target_department = department_combo.get().strip()
+                target_type = "USERS" if department_target == "SELECT USERS" else "DEPARTMENT"
+            target_usernames = [
+                username
+                for username, var in user_check_vars.items()
+                if bool(var.get())
+            ] if target_type == "USERS" else []
+            if not title or not message:
+                messagebox.showwarning("Notification", "Title và message không được để trống.")
+                return
+            if target_type == "USERS" and not target_usernames:
+                messagebox.showwarning("Notification", "Please select at least one user.")
+                return
+            try:
+                response = self.api_post(
+                    "/admin/announcements",
+                    {
+                        "action_by": self.admin_name,
+                        "title": title,
+                        "message": message,
+                        "target_type": target_type,
+                        "target_department": target_department,
+                        "target_usernames": target_usernames,
+                    },
+                )
+                result = response.json()
+            except requests.exceptions.Timeout:
+                messagebox.showerror("Timeout", "Gửi notification bị timeout.")
+                return
+            except Exception as exc:
+                messagebox.showerror("Notification", f"Không gửi được notification.\n{exc}")
+                return
+            if not result.get("success"):
+                messagebox.showerror("Notification", result.get("message", "Không gửi được notification."))
+                return
+            messagebox.showinfo("Notification", result.get("message", "Announcement sent successfully."))
+            popup.destroy()
+
+        ctk.CTkButton(
+            content,
+            text="Send",
+            height=40,
+            corner_radius=12,
+            fg_color=BTN_PRIMARY,
+            hover_color=BTN_PRIMARY_HOVER,
+            text_color=TEXT_MAIN,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=send_notification,
+        ).grid(row=7, column=0, sticky="e", padx=18, pady=(0, 18))
 
     # =========================================================
     # DATA
@@ -475,6 +893,7 @@ class AdminApprovalPage(ctk.CTkToplevel):
         approve_win.title(f"Approve User - {username}")
         approve_win.geometry("500x420")
         approve_win.configure(fg_color=BG_MAIN)
+        self.apply_window_icon(approve_win)
         approve_win.transient(self)
         approve_win.lift()
         approve_win.attributes("-topmost", True)
@@ -720,6 +1139,7 @@ class AdminApprovalPage(ctk.CTkToplevel):
         edit_win.geometry("560x760")
         edit_win.minsize(520, 640)
         edit_win.configure(fg_color=BG_MAIN)
+        self.apply_window_icon(edit_win)
 
         edit_win.transient(self)
         edit_win.lift()
@@ -955,6 +1375,7 @@ class AdminApprovalPage(ctk.CTkToplevel):
         log_win.title(f"User Log - {username}")
         log_win.geometry("950x620")
         log_win.configure(fg_color=BG_MAIN)
+        self.apply_window_icon(log_win)
 
         log_win.transient(self)
         log_win.lift()

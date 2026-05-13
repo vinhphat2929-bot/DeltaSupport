@@ -3,6 +3,10 @@ import requests
 from services.app_config import API_BASE_URL
 
 
+def _debug_task_update(message):
+    print(f"[TaskFollow frontend update] {message}", flush=True)
+
+
 def get_task_follows_api(action_by, search="", show_all=False, include_done=False):
     try:
         response = requests.get(
@@ -72,12 +76,25 @@ def create_task_follow_api(payload):
 
 def update_task_follow_api(task_id, payload):
     try:
+        url = f"{API_BASE_URL}/task-follows/{task_id}"
+        _debug_task_update(f"before request task_id={task_id} url={url} method=PUT payload_keys={sorted((payload or {}).keys())}")
         response = requests.put(
-            f"{API_BASE_URL}/task-follows/{task_id}",
+            url,
             json=payload,
             timeout=25,
         )
-        return response.json()
+        _debug_task_update(f"response status task_id={task_id} status={response.status_code}")
+        try:
+            result = response.json()
+        except ValueError:
+            result = {}
+        if not isinstance(result, dict):
+            result = {"data": result}
+        _debug_task_update(f"parsed response task_id={task_id} result={result}")
+        if response.ok and result.get("success") is not False:
+            result["success"] = True
+            result.setdefault("message", "Task updated successfully.")
+        return result
     except requests.exceptions.Timeout:
         return {"success": False, "message": "Timeout while updating task."}
     except requests.exceptions.RequestException as e:

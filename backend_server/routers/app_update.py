@@ -76,6 +76,36 @@ def _resolve_release_file_path(config_payload):
     return release_path
 
 
+def _resolve_configured_download_url(config_payload):
+    return normalize_text(config_payload.get("download_url"))
+
+
+def _resolve_release_file_name(config_payload, release_file_path=None):
+    configured_name = normalize_text(config_payload.get("file_name"))
+    if configured_name:
+        return configured_name
+    if release_file_path is not None:
+        return release_file_path.name
+    return ""
+
+
+def _resolve_release_file_size(config_payload, release_file_path=None):
+    configured_size = config_payload.get("file_size")
+    try:
+        configured_size_value = int(configured_size or 0)
+    except (TypeError, ValueError):
+        configured_size_value = 0
+
+    if configured_size_value > 0:
+        return configured_size_value
+    if release_file_path is not None:
+        try:
+            return int(release_file_path.stat().st_size)
+        except Exception:
+            return 0
+    return 0
+
+
 def _build_download_url(request, endpoint_path):
     return str(request.base_url).rstrip("/") + endpoint_path
 
@@ -83,12 +113,21 @@ def _build_download_url(request, endpoint_path):
 def _build_update_payload(config_payload, request, current_version=""):
     latest_version = normalize_text(config_payload.get("version"))
     release_file_path = _resolve_release_file_path(config_payload)
+    configured_download_url = _resolve_configured_download_url(config_payload)
     release_notes = normalize_text(config_payload.get("release_notes"))
     minimum_supported_version = normalize_text(config_payload.get("minimum_supported_version"))
     published_at = normalize_text(config_payload.get("published_at"))
     mandatory = bool(config_payload.get("mandatory"))
+    compatible_download_url = (
+        _build_download_url(request, "/app-update/download")
+        if release_file_path is not None
+        else configured_download_url
+    )
+    preferred_download_url = configured_download_url or compatible_download_url
+    file_name = _resolve_release_file_name(config_payload, release_file_path)
+    file_size = _resolve_release_file_size(config_payload, release_file_path)
 
-    if not latest_version or release_file_path is None:
+    if not latest_version or (release_file_path is None and not configured_download_url):
         return {
             "success": True,
             "update_available": False,
@@ -99,6 +138,7 @@ def _build_update_payload(config_payload, request, current_version=""):
             "published_at": published_at,
             "mandatory": mandatory,
             "download_url": "",
+            "preferred_download_url": "",
             "file_name": "",
             "file_size": 0,
             "message": "No app update is configured.",
@@ -119,9 +159,10 @@ def _build_update_payload(config_payload, request, current_version=""):
         "minimum_supported_version": minimum_supported_version,
         "published_at": published_at,
         "mandatory": bool(mandatory or minimum_required),
-        "download_url": _build_download_url(request, "/app-update/download"),
-        "file_name": release_file_path.name,
-        "file_size": int(release_file_path.stat().st_size),
+        "download_url": compatible_download_url,
+        "preferred_download_url": preferred_download_url,
+        "file_name": file_name,
+        "file_size": file_size,
         "message": "Update available." if update_available else "App is up to date.",
     }
 

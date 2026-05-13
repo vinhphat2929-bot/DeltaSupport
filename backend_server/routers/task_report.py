@@ -436,6 +436,7 @@ def validate_task_report_payload(cursor, data):
     problem = normalize_text(data.problem)
     solution = normalize_text(data.solution)
     processing = normalize_text(data.processing)
+    allowed_processing = {"DONE", "FOLLOW", "SYNC"}
     technician_username, technician_display_name = resolve_technician(
         cursor,
         data.technician_username,
@@ -453,6 +454,8 @@ def validate_task_report_payload(cursor, data):
         return None, "Solution is required."
     if not processing:
         return None, "Processing is required."
+    if processing.upper() not in allowed_processing:
+        return None, "Processing must be DONE, FOLLOW, or SYNC."
     if not technician_display_name:
         return None, "Technician is required."
 
@@ -465,7 +468,7 @@ def validate_task_report_payload(cursor, data):
         "caller_phone": caller_phone,
         "problem": problem,
         "solution": solution,
-        "processing": processing,
+        "processing": processing.upper(),
         "technician_username": technician_username,
         "technician_display_name": technician_display_name,
     }, ""
@@ -676,12 +679,13 @@ def get_task_reports(action_by: str, from_date: str = "", to_date: str = "", sea
             query += """
               AND (
                     MerchantName LIKE ?
+                    OR ProcessingStatus LIKE ?
                     OR ProblemSummary LIKE ?
                     OR SolutionSummary LIKE ?
                   )
             """
             keyword = f"%{search_text}%"
-            params.extend([keyword, keyword, keyword])
+            params.extend([keyword, keyword, keyword, keyword])
 
         query += """
             ORDER BY

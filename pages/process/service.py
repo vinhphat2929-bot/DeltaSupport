@@ -113,6 +113,91 @@ class ProcessService:
         }
         return payload, ""
 
+    def _normalize_update_value(self, value):
+        if isinstance(value, list):
+            return [str(item or "").strip() for item in value if str(item or "").strip()]
+        return str(value or "").strip()
+
+    def _handoff_signature_from_payload(self, payload):
+        handoff_type = str(payload.get("handoff_to_type", "") or "").strip().upper()
+        usernames = self._normalize_update_value(payload.get("handoff_to_usernames", []))
+        display_names = self._normalize_update_value(payload.get("handoff_to_display_names", []))
+        if handoff_type == "TEAM":
+            return (("TEAM", "", display_names[0] if display_names else "Tech Team"),)
+        return tuple(sorted(("USER", username, display_names[index] if index < len(display_names) else "") for index, username in enumerate(usernames)))
+
+    def _handoff_signature_from_task(self, task):
+        handoff_type = str(task.get("handoff_to_type", "") or "").strip().upper()
+        usernames = self._normalize_update_value(task.get("handoff_to_usernames", []))
+        display_names = self._normalize_update_value(task.get("handoff_to_display_names", []))
+        if handoff_type == "TEAM" or not usernames:
+            return (("TEAM", "", display_names[0] if display_names else str(task.get("handoff_to", "") or "Tech Team").strip()),)
+        return tuple(sorted(("USER", username, display_names[index] if index < len(display_names) else "") for index, username in enumerate(usernames)))
+
+    def build_task_update_payload(self, active_task, full_payload):
+        active_task = active_task or {}
+        full_payload = full_payload or {}
+        partial = {"action_by_username": self.username}
+
+        comparisons = [
+            ("merchant_raw_text", "merchant_raw"),
+            ("phone", "phone"),
+            ("tracking_number", "tracking_number"),
+            ("problem_summary", "problem"),
+            ("status", "status"),
+            ("merchant_timezone", "deadline_timezone"),
+        ]
+        for payload_key, task_key in comparisons:
+            if payload_key in full_payload and self._normalize_update_value(full_payload.get(payload_key)) != self._normalize_update_value(active_task.get(task_key)):
+                partial[payload_key] = full_payload.get(payload_key)
+
+        deadline_comparisons = [
+            ("deadline_date", "deadline_original_date", "deadline_date"),
+            ("deadline_time", "deadline_original_time", "deadline_time"),
+            ("deadline_period", "deadline_original_period", "deadline_period"),
+        ]
+        for payload_key, original_key, fallback_key in deadline_comparisons:
+            current_value = active_task.get(original_key, active_task.get(fallback_key, ""))
+            if payload_key in full_payload and self._normalize_update_value(full_payload.get(payload_key)) != self._normalize_update_value(current_value):
+                partial[payload_key] = full_payload.get(payload_key)
+
+        if self._handoff_signature_from_payload(full_payload) != self._handoff_signature_from_task(active_task):
+            for key in (
+                "handoff_to_type",
+                "handoff_to_username",
+                "handoff_to_display_name",
+                "handoff_to_usernames",
+                "handoff_to_display_names",
+            ):
+                partial[key] = full_payload.get(key, [] if key.endswith("s") else "")
+
+        training_keys = (
+            "training_form",
+            "training_started_at",
+            "training_started_by_username",
+            "training_started_by_display_name",
+            "training_completed_tabs",
+        )
+        training_task_keys = {
+            "training_form": "training_form",
+            "training_started_at": "training_started_at",
+            "training_started_by_username": "training_started_by_username",
+            "training_started_by_display_name": "training_started_by_display_name",
+            "training_completed_tabs": "training_completed_tabs",
+        }
+        for key in training_keys:
+            if key not in full_payload:
+                continue
+            current_value = active_task.get(training_task_keys[key], [] if isinstance(full_payload.get(key), list) else "")
+            if self._normalize_update_value(full_payload.get(key)) != self._normalize_update_value(current_value):
+                partial[key] = full_payload.get(key)
+
+        note = self._normalize_update_value(full_payload.get("note", ""))
+        if note:
+            partial["note"] = note
+
+        return partial
+
     def build_training_payload(self, active_task, form_data, complete_first=False, complete_second=False):
         if not active_task:
             return None, "Hay chon task can update."

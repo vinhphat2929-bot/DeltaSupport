@@ -235,7 +235,6 @@ class TaskPage(ctk.CTkFrame):
         self.search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10), pady=16)
 
         ctk.CTkButton(self.top_card, text="Search", width=82, height=34, corner_radius=12, fg_color=BTN_ACTIVE, hover_color=BTN_ACTIVE_HOVER, text_color=TEXT_DARK, font=("Segoe UI", 12, "bold"), command=self.apply_search).grid(row=0, column=2, sticky="w", padx=(0, 8), pady=16)
-        ctk.CTkButton(self.top_card, text="Clear", width=82, height=34, corner_radius=12, fg_color=BTN_DARK, hover_color=BTN_DARK_HOVER, text_color=TEXT_LIGHT, font=("Segoe UI", 12, "bold"), command=self.clear_search).grid(row=0, column=3, sticky="w", padx=(0, 16), pady=16)
         ctk.CTkButton(self.top_card, text="Create Task", width=104, height=34, corner_radius=12, fg_color=BTN_DARK, hover_color=BTN_DARK_HOVER, text_color=TEXT_LIGHT, font=("Segoe UI", 12, "bold"), command=self.start_new_task).grid(row=0, column=4, sticky="w", padx=(0, 16), pady=16)
 
         self.show_all_button = ctk.CTkButton(self.top_card, text="Show All: OFF", width=110, height=34, corner_radius=12, fg_color=BTN_DARK, hover_color=BTN_DARK_HOVER, text_color=TEXT_LIGHT, font=("Segoe UI", 12, "bold"), command=self.toggle_show_all)

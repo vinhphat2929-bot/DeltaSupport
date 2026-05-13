@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from database import get_connection
 from models import (
+    AppAnnouncementCreateRequest,
     ApproveUserRequest,
     RejectUserRequest,
     BlockUserRequest,
@@ -125,6 +126,22 @@ def can_delete_user(actor: dict | None):
     return str(actor.get("role", "")).strip().lower() in ["admin", "management", "manager"]
 
 
+def can_send_announcement(actor: dict | None):
+    if not actor:
+        return False
+    return str(actor.get("role", "")).strip().lower() in [
+        "admin",
+        "management",
+        "manager",
+        "hr",
+        "leader",
+        "ts leader",
+        "sale leader",
+        "mt leader",
+        "cs leader",
+    ]
+
+
 def can_approve_user(actor: dict | None, target_department: str, target_team: str):
     if not actor:
         return False
@@ -132,6 +149,123 @@ def can_approve_user(actor: dict | None, target_department: str, target_team: st
     if role in ["admin", "management", "manager"]:
         return True
     return False
+
+
+def ensure_app_announcement_tables(cursor):
+    cursor.execute(
+        """
+        IF OBJECT_ID('dbo.AppAnnouncement', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.AppAnnouncement (
+                AnnouncementID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                Title NVARCHAR(255) NOT NULL,
+                Message NVARCHAR(MAX) NOT NULL,
+                TargetType NVARCHAR(30) NOT NULL DEFAULT 'ALL',
+                TargetDepartment NVARCHAR(100) NULL,
+                CreatedBy NVARCHAR(100) NULL,
+                CreatedAt DATETIME NOT NULL DEFAULT GETDATE(),
+                IsActive BIT NOT NULL DEFAULT 1
+            )
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF OBJECT_ID('dbo.AppAnnouncementRead', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.AppAnnouncementRead (
+                ReadID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                AnnouncementID INT NOT NULL,
+                Username NVARCHAR(100) NOT NULL,
+                ReadAt DATETIME NOT NULL DEFAULT GETDATE(),
+                CONSTRAINT FK_AppAnnouncementRead_AnnouncementID
+                    FOREIGN KEY (AnnouncementID) REFERENCES dbo.AppAnnouncement(AnnouncementID)
+            )
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF OBJECT_ID('dbo.AppAnnouncementDismiss', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.AppAnnouncementDismiss (
+                DismissID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                AnnouncementID INT NOT NULL,
+                Username NVARCHAR(100) NOT NULL,
+                DismissedAt DATETIME NOT NULL DEFAULT GETDATE(),
+                CONSTRAINT FK_AppAnnouncementDismiss_AnnouncementID
+                    FOREIGN KEY (AnnouncementID) REFERENCES dbo.AppAnnouncement(AnnouncementID)
+            )
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF OBJECT_ID('dbo.AppAnnouncementRecipient', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.AppAnnouncementRecipient (
+                RecipientID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                AnnouncementID INT NOT NULL,
+                Username NVARCHAR(100) NOT NULL,
+                CreatedAt DATETIME NOT NULL DEFAULT GETDATE(),
+                CONSTRAINT FK_AppAnnouncementRecipient_AnnouncementID
+                    FOREIGN KEY (AnnouncementID) REFERENCES dbo.AppAnnouncement(AnnouncementID)
+            )
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'IX_AppAnnouncement_Target_CreatedAt'
+              AND object_id = OBJECT_ID('dbo.AppAnnouncement')
+        )
+        BEGIN
+            CREATE INDEX IX_AppAnnouncement_Target_CreatedAt
+            ON dbo.AppAnnouncement(IsActive, TargetType, TargetDepartment, CreatedAt DESC)
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'UX_AppAnnouncementRead_AnnouncementID_Username'
+              AND object_id = OBJECT_ID('dbo.AppAnnouncementRead')
+        )
+        BEGIN
+            CREATE UNIQUE INDEX UX_AppAnnouncementRead_AnnouncementID_Username
+            ON dbo.AppAnnouncementRead(AnnouncementID, Username)
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'UX_AppAnnouncementDismiss_AnnouncementID_Username'
+              AND object_id = OBJECT_ID('dbo.AppAnnouncementDismiss')
+        )
+        BEGIN
+            CREATE UNIQUE INDEX UX_AppAnnouncementDismiss_AnnouncementID_Username
+            ON dbo.AppAnnouncementDismiss(AnnouncementID, Username)
+        END
+        """
+    )
+    cursor.execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'UX_AppAnnouncementRecipient_AnnouncementID_Username'
+              AND object_id = OBJECT_ID('dbo.AppAnnouncementRecipient')
+        )
+        BEGIN
+            CREATE UNIQUE INDEX UX_AppAnnouncementRecipient_AnnouncementID_Username
+            ON dbo.AppAnnouncementRecipient(AnnouncementID, Username)
+        END
+        """
+    )
 
 
 def upsert_schedule_setup_inactive(cursor, username: str, department: str, team: str, action_by: str):
@@ -175,6 +309,113 @@ def set_schedule_setup_active(cursor, username: str, active: bool, action_by: st
         """,
         (1 if active else 0, action_by, username),
     )
+
+
+@router.post("/admin/announcements")
+def create_app_announcement(data: AppAnnouncementCreateRequest):
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        ensure_app_announcement_tables(cursor)
+
+        action_by = str(data.action_by or "").strip()
+        title = str(data.title or "").strip()
+        message = str(data.message or "").strip()
+        target_type = str(data.target_type or "ALL").strip().upper()
+        target_department = str(data.target_department or "").strip()
+        target_usernames = []
+        for raw_username in getattr(data, "target_usernames", []) or []:
+            username = str(raw_username or "").strip()
+            if username and username not in target_usernames:
+                target_usernames.append(username)
+
+        if not action_by:
+            return {"success": False, "message": "Missing action_by."}
+        if not title:
+            return {"success": False, "message": "Title is required."}
+        if not message:
+            return {"success": False, "message": "Message is required."}
+        if target_type not in {"ALL", "DEPARTMENT", "USERS"}:
+            return {"success": False, "message": "Target type is invalid."}
+        if target_type == "DEPARTMENT" and target_department not in VALID_ROLES:
+            return {"success": False, "message": "Target department is invalid."}
+        if target_type == "USERS" and not target_usernames:
+            return {"success": False, "message": "Please select at least one user."}
+
+        actor = get_actor_context(cursor, action_by)
+        if not can_send_announcement(actor):
+            return {"success": False, "message": "You do not have permission to send announcements."}
+
+        valid_target_usernames = []
+        if target_type == "USERS":
+            placeholders = ",".join(["?"] * len(target_usernames))
+            cursor.execute(
+                f"""
+                SELECT Username
+                FROM dbo.Users
+                WHERE IsActive = 1
+                  AND Username IN ({placeholders})
+                """,
+                tuple(target_usernames),
+            )
+            valid_target_usernames = [
+                str(row[0] or "").strip()
+                for row in cursor.fetchall()
+                if row and str(row[0] or "").strip()
+            ]
+            if not valid_target_usernames:
+                return {"success": False, "message": "Selected users are invalid."}
+
+        cursor.execute(
+            """
+            INSERT INTO dbo.AppAnnouncement
+            (
+                Title,
+                Message,
+                TargetType,
+                TargetDepartment,
+                CreatedBy,
+                CreatedAt,
+                IsActive
+            )
+            OUTPUT INSERTED.AnnouncementID
+            VALUES (?, ?, ?, ?, ?, GETDATE(), 1)
+            """,
+            (
+                title,
+                message,
+                target_type,
+                target_department if target_type == "DEPARTMENT" else None,
+                action_by,
+            ),
+        )
+        row = cursor.fetchone()
+        announcement_id = int(row[0]) if row and row[0] is not None else None
+        if target_type == "USERS" and announcement_id:
+            for username in valid_target_usernames:
+                cursor.execute(
+                    """
+                    INSERT INTO dbo.AppAnnouncementRecipient (AnnouncementID, Username)
+                    VALUES (?, ?)
+                    """,
+                    (announcement_id, username),
+                )
+        conn.commit()
+        return {
+            "success": True,
+            "announcement_id": announcement_id,
+            "message": "Announcement sent successfully.",
+        }
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"success": False, "message": str(e)}
+
+    finally:
+        if conn:
+            conn.close()
 
 
 @router.get("/pending-users")

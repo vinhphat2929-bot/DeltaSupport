@@ -56,6 +56,7 @@ class AppUpdateRouterTests(unittest.TestCase):
         self.assertTrue(payload["update_available"])
         self.assertEqual("2026.4.25.2", payload["version"])
         self.assertTrue(payload["download_url"].endswith("/app-update/download"))
+        self.assertTrue(payload["preferred_download_url"].endswith("/app-update/download"))
         self.assertEqual(self.release_path.name, payload["file_name"])
 
     def test_manifest_reports_no_update_when_not_configured(self):
@@ -70,6 +71,53 @@ class AppUpdateRouterTests(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertFalse(payload["update_available"])
         self.assertEqual("", payload["download_url"])
+        self.assertEqual("", payload["preferred_download_url"])
+
+    def test_manifest_prefers_configured_external_download_url(self):
+        self.write_config(
+            download_url="https://drive.google.com/uc?export=download&id=abc123",
+        )
+        config_payload = app_update._load_app_update_config()
+
+        payload = app_update._build_update_payload(
+            config_payload,
+            FakeRequest(),
+            current_version="2026.4.25.1",
+        )
+        self.assertTrue(payload["success"])
+        self.assertTrue(payload["update_available"])
+        self.assertTrue(payload["download_url"].endswith("/app-update/download"))
+        self.assertEqual(
+            "https://drive.google.com/uc?export=download&id=abc123",
+            payload["preferred_download_url"],
+        )
+
+    def test_manifest_supports_external_download_without_local_release_file(self):
+        self.write_config(
+            windows_exe_path="",
+            download_url="https://drive.google.com/uc?export=download&id=abc123",
+            file_name="DELTA_ONE.exe",
+            file_size=123456,
+        )
+        config_payload = app_update._load_app_update_config()
+
+        payload = app_update._build_update_payload(
+            config_payload,
+            FakeRequest(),
+            current_version="2026.4.25.1",
+        )
+        self.assertTrue(payload["success"])
+        self.assertTrue(payload["update_available"])
+        self.assertEqual(
+            "https://drive.google.com/uc?export=download&id=abc123",
+            payload["download_url"],
+        )
+        self.assertEqual(
+            "https://drive.google.com/uc?export=download&id=abc123",
+            payload["preferred_download_url"],
+        )
+        self.assertEqual("DELTA_ONE.exe", payload["file_name"])
+        self.assertEqual(123456, payload["file_size"])
 
     def test_download_endpoint_returns_release_file(self):
         self.write_config()

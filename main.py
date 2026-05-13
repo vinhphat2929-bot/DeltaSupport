@@ -19,6 +19,11 @@ from services.update_service import (
     launch_self_update,
 )
 from utils.resource_utils import get_data_path
+from utils.window_icon_utils import (
+    apply_app_window_icon,
+    get_app_bitmap_icon_path,
+    get_app_icon_source_path,
+)
 from widgets.update_prompt_dialog import UpdatePromptDialog
 from app_version import APP_NAME
 
@@ -95,15 +100,15 @@ class App(ctk.CTk):
             pass
 
     def set_app_icon(self):
-        photo_icon_path = get_data_path("icon.png")
-        bitmap_icon_path = self.resolve_bitmap_icon_path(photo_icon_path)
+        photo_icon_path = get_app_icon_source_path()
+        bitmap_icon_path = get_app_bitmap_icon_path()
         self._bitmap_icon_path = bitmap_icon_path
 
         if not os.path.exists(photo_icon_path):
             photo_icon_path = bitmap_icon_path
 
         if not os.path.exists(photo_icon_path):
-            print(f"Khong tim thay icon: {photo_icon_path}")
+            print(f"Icon file not found: {photo_icon_path}")
             return
 
         try:
@@ -122,7 +127,9 @@ class App(ctk.CTk):
                     self.iconphoto(True, *icon_variants)
                     self._icon_photo = icon_variants
         except Exception as e:
-            print("Khong load duoc icon:", e)
+            print("Unable to load icon:", e)
+
+        apply_app_window_icon(self, self)
 
     def resolve_bitmap_icon_path(self, photo_icon_path=""):
         icon_candidates = [
@@ -295,13 +302,13 @@ class App(ctk.CTk):
             if manual:
                 messagebox.showerror(
                     "App Update",
-                    result.get("message", "Khong kiem tra duoc ban cap nhat."),
+                    result.get("message", "Unable to check for updates."),
                 )
             return
 
         if not result.get("update_available"):
             if manual:
-                messagebox.showinfo("App Update", "Khong co cap nhat moi.")
+                messagebox.showinfo("App Update", "No new updates are available.")
             return
 
         if not manual:
@@ -313,19 +320,19 @@ class App(ctk.CTk):
         latest_version = str(update_info.get("version", "") or "").strip()
         update_available = bool(update_info.get("update_available"))
         can_self_update = is_frozen_app()
-        status_text = "Chua kiem tra update."
+        status_text = "Update status has not been checked yet."
 
         if self._update_in_progress:
-            status_text = "Dang cap nhat app..."
+            status_text = "Installing update..."
         elif self._update_check_in_progress:
-            status_text = "Dang kiem tra ban moi..."
+            status_text = "Checking for updates..."
         elif update_available and latest_version:
-            status_text = f"Co ban moi: {latest_version}"
+            status_text = f"New version available: {latest_version}"
         elif self._update_last_result:
             if self._update_last_result.get("success"):
                 status_text = ""
             else:
-                status_text = self._update_last_result.get("message", "Khong kiem tra duoc update.")
+                status_text = self._update_last_result.get("message", "Unable to check for updates.")
 
         return {
             "current_version": current_version,
@@ -385,19 +392,19 @@ class App(ctk.CTk):
 
         precheck = ensure_update_can_start()
         if not precheck.get("success"):
-            messagebox.showerror("App Update", precheck.get("message", "Khong the bat dau update."))
+            messagebox.showerror("App Update", precheck.get("message", "Unable to start the update."))
             if self._update_dialog and self._update_dialog.winfo_exists():
-                self._update_dialog.set_error(precheck.get("message", "Khong the bat dau update."))
+                self._update_dialog.set_error(precheck.get("message", "Unable to start the update."))
             return
 
         if not is_frozen_app():
-            messagebox.showinfo("App Update", "Auto update chi hoat dong tren ban .exe da build.")
+            messagebox.showinfo("App Update", "Auto-update only works in the packaged .exe build.")
             return
 
         self._update_in_progress = True
         self.notify_update_state_changed()
         if self._update_dialog and self._update_dialog.winfo_exists():
-            self._update_dialog.set_busy("Dang chuan bi tai ban cap nhat...")
+            self._update_dialog.set_busy("Preparing the update package...")
 
         threading.Thread(target=self._download_and_apply_update, daemon=True).start()
 
@@ -431,10 +438,28 @@ class App(ctk.CTk):
         messagebox.showerror("App Update", message)
 
     def handle_update_success(self, result):
-        message = result.get("message", "Dang cap nhat app...")
+        message = result.get("message", "Installing update...")
         if self._update_dialog and self._update_dialog.winfo_exists():
             self._update_dialog.set_completed(message)
-        self.after(500, self.destroy)
+        self.after(500, self.exit_for_update)
+
+    def exit_for_update(self):
+        try:
+            self.quit()
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
+        def _hard_exit():
+            try:
+                os._exit(0)
+            except Exception:
+                pass
+
+        threading.Timer(0.6, _hard_exit).start()
 
 
 if __name__ == "__main__":
